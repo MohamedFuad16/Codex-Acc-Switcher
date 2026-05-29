@@ -1,59 +1,117 @@
-# Codex Account Switcher (macOS Menu Bar Utility)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/MohamedFuad16/Codex-Acc-Switcher/MoneyMap/Sources/icon.png" alt="Codex Account Switcher Logo" width="96" height="96" style="border-radius: 20%;" onerror="this.style.display='none'"/>
+</p>
 
-A lightweight, blazing-fast, and completely native macOS menu bar utility designed to switch between your saved `codex-auth` accounts with a single click. It automatically updates active auth credentials, handles process lifecycle restarts for the Codex App, and displays your active token usage limits.
+<h1 align="center">Codex Account Switcher</h1>
+
+<p align="center">
+  <strong>A premium, native macOS menu bar utility to switch active Codex accounts in a single click.</strong>
+</p>
+
+<p align="center">
+  <a href="https://developer.apple.com/swift/"><img src="https://img.shields.io/badge/Language-Swift_5.9+-orange.svg?style=flat-square" alt="Swift"/></a>
+  <a href="https://www.apple.com/macos/"><img src="https://img.shields.io/badge/Platform-macOS_14.0+-black.svg?style=flat-square&logo=apple" alt="macOS"/></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="MIT License"/></a>
+  <a href="https://github.com/MohamedFuad16/Codex-Acc-Switcher/actions"><img src="https://img.shields.io/badge/Build-passing-success.svg?style=flat-square" alt="Build Status"/></a>
+  <a href="#"><img src="https://img.shields.io/badge/Dependencies-none-brightgreen.svg?style=flat-square" alt="Dependencies"/></a>
+</p>
+
+<p align="center">
+  <a href="#-key-features">Key Features</a> •
+  <a href="#%EF%B8%8F-how-it-works">How It Works</a> •
+  <a href="#-installation">Installation</a> •
+  <a href="#%EF%B8%8F-development">Development</a> •
+  <a href="#-license">License</a>
+</p>
 
 ---
 
-## 🌟 Premium Features
+## 📖 Overview
 
-This version has been polished and packed with professional macOS integration features:
+**Codex Account Switcher** is an ultra-lightweight, blazing-fast macOS menu bar utility built in pure Swift. It eliminates the friction of managing multiple OpenAI Codex / ChatGPT credentials on your local machine. 
 
-1. **Sleek High-Tech Loader**: Features an incredibly smooth, fast-spinning Braille animation (`⠋`, `⠙`, `⠹`, `⠸`...) in the status bar while switching accounts to provide instant premium feedback.
-2. **Active Usage Indicators**: Displays remaining usage remaining (5hr and Weekly) in the menu bar and dropdown items.
-3. **Resilient Background Timer**: Standard Cocoa status-item menus block the main thread timer when open. We've added the refresh timers directly to the common run loop modes, ensuring background updates continue seamlessly even while interacting with the dropdown.
-4. **Dynamic Environment Resolution**: Zero hardcoded paths! The utility dynamically inspects and traverses your NVM Node.js versions in `~/.nvm` to locate the `codex-auth` executable, and automatically falls back to your login shell configuration.
-5. **Completely Portable**: Automatically resolves paths like script restart directories using standard native Cocoa environment properties (`NSHomeDirectory()`) so the app works flawlessly out of the box on any Mac.
-6. **Robust Process Execution**: Prevents application hangs and deadlocks in stdout/stderr pipe buffers by reading data streams before executing process waits.
+With zero external dependencies and a footprint under 300KB, it integrates directly with standard macOS system APIs to hot-swap account tokens, safely restart active desktop applications, and feed real-time usage budgets directly into your status bar.
 
 ---
 
-## 🚀 Getting Started
+## ✨ Key Features
 
-### Prerequisites
+### 🎛️ One-Click Switch & Hot Reload
+*   Instantly swap between saved profiles in less than a second.
+*   Automatically terminates, purges, and restarts active desktop Codex app processes in the background to apply the new active session instantly.
 
-- A Mac running macOS 14.0 or newer (Apple Silicon supported).
-- `codex-auth` installed on your system.
+### 🌀 High-Tech Braille Loader Animation
+*   Upgraded with a modern, ultra-smooth spinning loader (`⠋`, `⠙`, `⠹`, `⠸`, `⠼`, `⠴`...) rotating at `0.08s` intervals in your menu bar. 
+*   Provides immediate, state-of-the-art interactive feedback during backend swapping operations.
 
-### Build & Run
+### 📊 Real-Time Usage & Cap Meters
+*   Track remaining account limits (5-Hour and Weekly) directly in your status bar or inside the dropdown column.
+*   Timers are registered in the `.common` run loop mode, ensuring background checks keep updating even when you are interacting with the menu!
 
-Building the native Swift application has been simplified into simple executable scripts. Open your terminal in the repository directory and run:
+### 🗺️ Dynamic Environment Resolution
+*   **Zero Hardcoding**: Dynamically parses and traverses your local NVM (`~/.nvm`) Node installations to locate the executable binary.
+*   **Intelligent Shell Fallback**: Falls back to zsh login streams (`/bin/zsh -l`) to query environment maps if customized `PATH` parameters are missing.
 
-```bash
-# Build the native Mac app bundle
-./build.sh
+### 🏷️ Custom Account Labeling
+*   Add custom aliases, numbers, or emojis (e.g. `01`, `Work`, `🚀`) to identify accounts instantly in the status line while preserving emails in standard dropdown grids.
 
-# Run the app locally to test it
-./run.sh
+---
+
+## ⚙️ How It Works
+
+The Swift menu bar orchestrates token swapping and app lifecycle management securely via local POSIX subprocess bindings:
+
+```
+[ macOS Menu Bar ]
+       │
+       ├─► [1] Swaps active credentials safely in registry.json & auth.json
+       ├─► [2] Triggers background process termination signals (SIGTERM/SIGKILL)
+       ├─► [3] Relaunches desktop app via CLI fallback (`open -a Codex`)
+       └─► [4] Starts smooth Braille spinner on Main Thread (.common Run Loop)
 ```
 
-### Installation
+---
 
-To install and add it permanently to your user Applications directory (`~/Applications/`):
+## 🚀 Installation
 
+### 1. Clone the repository
+```bash
+git clone https://github.com/MohamedFuad16/Codex-Acc-Switcher.git
+cd Codex-Acc-Switcher
+```
+
+### 2. Build the Application Bundle
+We have provided standard executables to compile and assemble the App Bundle seamlessly. Run:
+```bash
+./build.sh
+```
+This builds and places `Codex Account Switcher.app` in the `./build` directory.
+
+### 3. Deploy to Applications
+To copy the application safely to your local Applications folder (`~/Applications`):
 ```bash
 ./install.sh
 ```
 
 ---
 
-## 🛠️ Technology Stack
+## 🛠️ Development
 
-- **Core**: 100% Pure native Apple Swift
-- **Frameworks**: Native Cocoa & AppKit (NSStatusBar, NSMenu, NSMenuItem, Process, Pipe)
-- **Dependencies**: None! Zero external framework dependencies, making the app bundle incredibly lightweight (~280KB) and highly performant.
+This utility is built completely in Swift with **zero external package dependencies** (no CocoaPods, no Swift Package Manager dependencies, no dynamic frameworks), compiled directly with `swiftc`. This results in an incredibly responsive, native application with a negligible memory footprint.
+
+*   **Language**: Swift 5.9+
+*   **APIs**: Cocoa / AppKit (`NSStatusBar`, `NSStatusItem`, `NSMenu`, `Process`, `Pipe`)
+*   **Compiler**: `swiftc` targeted for macOS 14.0+ (`arm64-apple-macosx14.0`)
+
+To test changes rapidly without installing:
+```bash
+./run.sh
+```
 
 ---
 
 ## 📝 License
 
-Developed with ❤️ for the Codex developer community. Feel free to use, share, and improve!
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+Developed with ❤️ by **[MohamedFuad16](https://github.com/MohamedFuad16)**. Contributions and issues are always welcome!
