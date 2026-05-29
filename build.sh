@@ -43,13 +43,17 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>
   <string>CodexAccountSwitcher</string>
   <key>CFBundleIdentifier</key>
-  <string>local.codex-account-switcher.menu-bar</string>
+  <string>com.mohamedfuad.codexaccountswitcher</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
   <string>Codex Account Switcher</string>
+  <key>CFBundleDisplayName</key>
+  <string>Codex Account Switcher</string>
   <key>CFBundleIconFile</key>
   <string>AccountSwitcherIcon.png</string>
+  <key>NSUserNotificationUsageDescription</key>
+  <string>Codex Account Switcher sends low-usage reminders when your active account is near the configured threshold.</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
