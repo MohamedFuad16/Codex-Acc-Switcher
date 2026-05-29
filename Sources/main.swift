@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UserNotifications
 
 struct CodexAccount {
     let selector: String
@@ -23,11 +24,15 @@ struct CommandResult {
     let output: String
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let refreshInterval: TimeInterval = 5
     private let labelsDefaultsKey = "accountDisplayLabels"
+    private let remindersEnabledDefaultsKey = "usageReminderEnabled"
+    private let reminderThresholdDefaultsKey = "usageReminderThreshold"
     private var refreshTimer: Timer?
+    private var statusAnimationTimer: Timer?
+    private var statusAnimationFrame = 0
     private var accounts: [CodexAccount] = []
     private var lastError: String?
     private var isSwitching = false
@@ -35,6 +40,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var switchAnimationFrame = 0
     private var switchingTitle = "Switching"
     private let switchAnimationFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    private let statusPulseFrames = ["·", "•", "·", " "]
+    private var notifiedLowUsageKeys = Set<String>()
+    private var remindersEnabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: remindersEnabledDefaultsKey) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: remindersEnabledDefaultsKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: remindersEnabledDefaultsKey)
+        }
+    }
+    private var reminderThreshold: Int {
+        get {
+            let stored = UserDefaults.standard.integer(forKey: reminderThresholdDefaultsKey)
+            return stored == 0 ? 10 : max(1, min(99, stored))
+        }
+        set {
+            UserDefaults.standard.set(max(1, min(99, newValue)), forKey: reminderThresholdDefaultsKey)
+        }
+    }
     private var usageMode: UsageDisplayMode {
         get {
             UsageDisplayMode(rawValue: UserDefaults.standard.string(forKey: "usageDisplayMode") ?? "") ?? .weekly
@@ -46,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        configureNotifications()
         configureStatusButton()
         refreshAccounts()
         let timer = Timer(timeInterval: refreshInterval, repeats: true) { [weak self] _ in
@@ -53,6 +81,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         RunLoop.current.add(timer, forMode: .common)
         refreshTimer = timer
+
+        let animationTimer = Timer(timeInterval: 0.65, repeats: true) { [weak self] _ in
+            self?.advanceStatusAnimation()
+        }
+        RunLoop.current.add(animationTimer, forMode: .common)
+        statusAnimationTimer = animationTimer
+    }
+
+    private func configureNotifications() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
     private func configureStatusButton() {
@@ -64,7 +104,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadCodexIcon() -> NSImage? {
-        let candidates = [
+        let bundledCandidates = [
+            Bundle.main.path(forResource: "AccountSwitcherIcon", ofType: "png"),
+            Bundle.main.path(forResource: "AccountSwitcherIcon", ofType: "icns")
+        ].compactMap { $0 }
+        let candidates = bundledCandidates + [
             "/Applications/Codex.app/Contents/Resources/icon.icns",
             "/Applications/Codex.app/Contents/Resources/codexTemplate@2x.png",
             "/Applications/Codex.app/Contents/Resources/codexTemplate.png"
@@ -75,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return nil
         }
         image.size = NSSize(width: 18, height: 18)
+        image.isTemplate = false
         return image
     }
 
@@ -94,6 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.accounts = []
                     self.lastError = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
+                self.checkUsageReminder()
                 self.rebuildMenu()
             }
         }
@@ -104,7 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let active = accounts.first(where: { $0.isActive }) {
             if !isSwitching {
-                statusItem.button?.title = statusTitle(for: active)
+                updateStatusTitle(for: active)
             }
             menu.addItem(headerItem("Active: \(active.email) (\(displayPlan(active.plan)))"))
         } else {
@@ -204,6 +250,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(removeItem)
         }
 
+        let reminderItem = NSMenuItem(title: "Usage Reminder", action: nil, keyEquivalent: "")
+        let reminderMenu = NSMenu()
+        let enableReminder = NSMenuItem(title: "Notify below \(reminderThreshold)%", action: #selector(toggleUsageReminder), keyEquivalent: "")
+        enableReminder.target = self
+        enableReminder.state = remindersEnabled ? .on : .off
+        reminderMenu.addItem(enableReminder)
+
+        let setThreshold = NSMenuItem(title: "Set Reminder Percentage...", action: #selector(setReminderThreshold), keyEquivalent: "")
+        setThreshold.target = self
+        reminderMenu.addItem(setThreshold)
+
+        let testNotification = NSMenuItem(title: "Test Notification", action: #selector(testUsageReminder), keyEquivalent: "")
+        testNotification.target = self
+        testNotification.isEnabled = remindersEnabled
+        reminderMenu.addItem(testNotification)
+        reminderItem.submenu = reminderMenu
+        menu.addItem(reminderItem)
+
         let refresh = NSMenuItem(title: "Refresh", action: #selector(refreshNow), keyEquivalent: "r")
         refresh.target = self
         refresh.isEnabled = !isSwitching
@@ -215,12 +279,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
+    private func advanceStatusAnimation() {
+        guard !isSwitching, let active = accounts.first(where: { $0.isActive }) else { return }
+        statusAnimationFrame += 1
+        updateStatusTitle(for: active)
+    }
+
+    private func updateStatusTitle(for account: CodexAccount) {
+        statusItem.button?.title = statusTitle(for: account)
+    }
+
     private func statusTitle(for account: CodexAccount) -> String {
+        let pulse = statusPulseFrames[statusAnimationFrame % statusPulseFrames.count]
         switch usageMode {
         case .fiveHour:
-            return "\(displayLabel(for: account)) · 5hr \(remainingPercentText(fromUsed: account.fiveHourUsedPercent))"
+            return "\(displayLabel(for: account)) \(pulse) 5hr \(remainingPercentText(fromUsed: account.fiveHourUsedPercent))"
         case .weekly:
-            return "\(displayLabel(for: account)) · W \(remainingPercentText(fromUsed: account.weeklyUsedPercent))"
+            return "\(displayLabel(for: account)) \(pulse) W \(remainingPercentText(fromUsed: account.weeklyUsedPercent))"
         }
     }
 
@@ -364,10 +439,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let path = codexAuthPath() ?? "codex-auth"
         let home = NSHomeDirectory()
         let restartPath = "\(home)/.codex/skills/codex-account-switcher/scripts/codex_account_switch.sh"
+        let setupCommand = shellEnvironmentSetupCommand()
         let script = """
         tell application "Terminal"
           activate
-          do script "\(shellEscaped(path)) login --device-auth && \(shellEscaped(restartPath)) restart-app; echo; echo 'Codex account login finished and Codex App was relaunched. You can close this window.'"
+          do script "\(setupCommand); \(shellEscaped(path)) login --device-auth && \(shellEscaped(restartPath)) restart-app; echo; echo 'Codex account login finished and Codex App was relaunched. You can close this window.'"
         end tell
         """
         let result = run("/usr/bin/osascript", ["-e", script])
@@ -376,6 +452,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             self?.refreshAccounts()
+        }
+    }
+
+    @objc private func toggleUsageReminder() {
+        remindersEnabled.toggle()
+        if remindersEnabled {
+            configureNotifications()
+            checkUsageReminder()
+        } else {
+            notifiedLowUsageKeys.removeAll()
+        }
+        rebuildMenu()
+    }
+
+    @objc private func setReminderThreshold() {
+        let alert = NSAlert()
+        alert.messageText = "Usage reminder"
+        alert.informativeText = "Notify when the active account usage display is at or below this percentage."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.stringValue = "\(reminderThreshold)"
+        field.placeholderString = "10"
+        alert.accessoryView = field
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let value = Int(trimmed), (1...99).contains(value) else {
+                showAlert(title: "Invalid percentage", message: "Enter a number from 1 to 99.")
+                return
+            }
+            reminderThreshold = value
+            notifiedLowUsageKeys.removeAll()
+            checkUsageReminder()
+            rebuildMenu()
+        }
+    }
+
+    @objc private func testUsageReminder() {
+        if let active = accounts.first(where: { $0.isActive }) {
+            sendUsageReminder(account: active, metric: "5hr", percent: active.fiveHourUsedPercent ?? reminderThreshold)
+        } else {
+            sendNotification(title: "Codex usage reminder", subtitle: "No active account", body: "Open the switcher after adding a Codex account.")
         }
     }
 
@@ -505,6 +625,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func endSwitchAnimation() {
         switchAnimationTimer?.invalidate()
         switchAnimationTimer = nil
+    }
+
+    private func checkUsageReminder() {
+        guard remindersEnabled, let active = accounts.first(where: { $0.isActive }) else { return }
+        checkUsageReminder(account: active, metric: "5hr", percent: active.fiveHourUsedPercent)
+        checkUsageReminder(account: active, metric: "Weekly", percent: active.weeklyUsedPercent)
+    }
+
+    private func checkUsageReminder(account: CodexAccount, metric: String, percent: Int?) {
+        guard let percent else { return }
+        let threshold = reminderThreshold
+        let key = "\(account.email)|\(metric)|\(threshold)"
+        if percent <= threshold {
+            guard !notifiedLowUsageKeys.contains(key) else { return }
+            notifiedLowUsageKeys.insert(key)
+            sendUsageReminder(account: account, metric: metric, percent: percent)
+        } else {
+            notifiedLowUsageKeys.remove(key)
+        }
+    }
+
+    private func sendUsageReminder(account: CodexAccount, metric: String, percent: Int) {
+        let label = displayLabel(for: account)
+        sendNotification(
+            title: "Codex usage is low",
+            subtitle: "\(label) · \(metric) \(percent)%",
+            body: "\(account.email) is at or below \(reminderThreshold)%. Switch to another saved account from the menu bar when you are ready."
+        )
+    }
+
+    private func sendNotification(title: String, subtitle: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.subtitle = subtitle
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: "codex-usage-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                NSLog("Codex Account Switcher notification failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        if #available(macOS 11.0, *) {
+            completionHandler([.banner, .sound])
+        } else {
+            completionHandler([.alert, .sound])
+        }
     }
 
     private func syncActiveAuthSnapshot() -> String? {
@@ -734,10 +912,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         process.arguments = args
         process.standardOutput = pipe
         process.standardError = pipe
-        var environment = ProcessInfo.processInfo.environment
+        var environment = augmentedEnvironment()
         let bundledNode = "/Applications/Codex.app/Contents/Resources/node"
         if FileManager.default.isExecutableFile(atPath: bundledNode) {
             environment["CODEX_AUTH_NODE_EXECUTABLE"] = bundledNode
+        }
+        let bundledCodex = "/Applications/Codex.app/Contents/Resources/codex"
+        if FileManager.default.isExecutableFile(atPath: bundledCodex) {
+            environment["CODEX_CLI_PATH"] = bundledCodex
         }
         process.environment = environment
 
@@ -750,6 +932,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             return CommandResult(status: 127, output: error.localizedDescription)
         }
+    }
+
+    private func augmentedEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = augmentedPath(from: environment["PATH"])
+        return environment
+    }
+
+    private func augmentedPath(from currentPath: String?) -> String {
+        let home = NSHomeDirectory()
+        let candidates = [
+            "/Applications/Codex.app/Contents/Resources",
+            "\(home)/.nvm/versions/node/v20.11.0/bin",
+            "\(home)/.local/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin"
+        ]
+
+        var seen = Set<String>()
+        var parts: [String] = []
+        for path in candidates + (currentPath?.split(separator: ":").map(String.init) ?? []) {
+            guard !path.isEmpty, !seen.contains(path) else { continue }
+            seen.insert(path)
+            parts.append(path)
+        }
+        return parts.joined(separator: ":")
+    }
+
+    private func shellEnvironmentSetupCommand() -> String {
+        let path = augmentedPath(from: nil)
+        var commands = ["export PATH=\(shellEscaped(path))"]
+        let bundledNode = "/Applications/Codex.app/Contents/Resources/node"
+        if FileManager.default.isExecutableFile(atPath: bundledNode) {
+            commands.append("export CODEX_AUTH_NODE_EXECUTABLE=\(shellEscaped(bundledNode))")
+        }
+        let bundledCodex = "/Applications/Codex.app/Contents/Resources/codex"
+        if FileManager.default.isExecutableFile(atPath: bundledCodex) {
+            commands.append("export CODEX_CLI_PATH=\(shellEscaped(bundledCodex))")
+        }
+        return commands.joined(separator: "; ")
     }
 
     private func showAlert(title: String, message: String) {
