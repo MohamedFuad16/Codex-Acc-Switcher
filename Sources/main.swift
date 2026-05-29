@@ -668,7 +668,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             guard isAuthorized else {
                 if reportResult {
                     DispatchQueue.main.async {
-                        self.showAlert(title: "Notifications are blocked", message: message ?? "Enable notifications for Codex Account Switcher in System Settings.")
+                        self.showNotificationSettingsAlert(message: message ?? self.notificationSettingsMessage())
                     }
                 }
                 return
@@ -689,7 +689,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     NSLog("Codex Account Switcher notification failed: \(error.localizedDescription)")
                     if reportResult {
                         DispatchQueue.main.async {
-                            self.showAlert(title: "Notification failed", message: error.localizedDescription)
+                            self.showNotificationSettingsAlert(message: self.notificationSettingsMessage())
                         }
                     }
                 } else if reportResult {
@@ -709,20 +709,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 completion(true, nil)
             case .notDetermined:
                 center.requestAuthorization(options: [.alert, .sound]) { granted, error in
-                    if let error {
-                        completion(false, error.localizedDescription)
+                    if error != nil {
+                        completion(false, self.notificationSettingsMessage())
                     } else if granted {
                         completion(true, nil)
                     } else {
-                        completion(false, "Notification permission was not granted.")
+                        completion(false, self.notificationSettingsMessage())
                     }
                 }
             case .denied:
-                completion(false, "Notifications are disabled for Codex Account Switcher. Enable them in System Settings > Notifications, then try Test Notification again.")
+                completion(false, self.notificationSettingsMessage())
             @unknown default:
-                completion(false, "macOS returned an unknown notification permission state.")
+                completion(false, self.notificationSettingsMessage())
             }
         }
+    }
+
+    private func notificationSettingsMessage() -> String {
+        "Enable notifications for Codex Account Switcher in System Settings > Notifications, then run Test Notification again."
+    }
+
+    private func showNotificationSettingsAlert(message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Enable notifications"
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "OK")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            openNotificationSettings()
+        }
+    }
+
+    private func openNotificationSettings() {
+        let candidates = [
+            "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
+            "x-apple.systempreferences:com.apple.preference.notifications"
+        ]
+
+        for candidate in candidates {
+            guard let url = URL(string: candidate) else { continue }
+            if NSWorkspace.shared.open(url) {
+                return
+            }
+        }
+
+        NSWorkspace.shared.openApplication(
+            at: URL(fileURLWithPath: "/System/Applications/System Settings.app"),
+            configuration: NSWorkspace.OpenConfiguration()
+        )
     }
 
     func userNotificationCenter(

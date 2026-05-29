@@ -48,12 +48,21 @@ With zero external dependencies and a footprint under 300KB, it integrates direc
 *   Track remaining account limits (5-Hour and Weekly) directly in your status bar or inside the dropdown column.
 *   Timers are registered in the `.common` run loop mode, ensuring background checks keep updating even when you are interacting with the menu!
 
+### 🔔 Low-Usage Notifications
+*   Get a macOS notification when the active account drops below your chosen usage threshold.
+*   Use **Usage Reminder → Set Reminder Percentage...** to change the default 10% threshold.
+*   If alerts are blocked, **Test Notification** opens System Settings so you can enable notifications for Codex Account Switcher.
+
 ### 🗺️ Dynamic Environment Resolution
 *   **Zero Hardcoding**: Dynamically parses and traverses your local NVM (`~/.nvm`) Node installations to locate the executable binary.
 *   **Intelligent Shell Fallback**: Falls back to zsh login streams (`/bin/zsh -l`) to query environment maps if customized `PATH` parameters are missing.
 
 ### 🏷️ Custom Account Labeling
 *   Add custom aliases, numbers, or emojis (e.g. `01`, `Work`, `🚀`) to identify accounts instantly in the status line while preserving emails in standard dropdown grids.
+
+### 🎨 Separate App & Menu Bar Icons
+*   `Sources/icon.png` is packaged as the application icon.
+*   `Sources/toolbar-icon.png` is bundled separately for the menu bar status item.
 
 ---
 
@@ -92,6 +101,9 @@ To copy the application safely to your local Applications folder (`~/Application
 ```bash
 ./install.sh
 ```
+
+### 4. Enable Notifications
+Open the menu bar item and choose **Usage Reminder → Test Notification**. If macOS blocks alerts, choose **Open Settings** and allow notifications for **Codex Account Switcher**.
 
 ---
 
