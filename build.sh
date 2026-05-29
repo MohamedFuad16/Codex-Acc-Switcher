@@ -11,6 +11,7 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 BIN_PATH="$MACOS_DIR/CodexAccountSwitcher"
 MODULE_CACHE_DIR="$BUILD_DIR/ModuleCache"
 ICON_SOURCE="$ROOT_DIR/Sources/icon.png"
+TOOLBAR_ICON_SOURCE="$ROOT_DIR/Sources/toolbar-icon.png"
 ICONSET_DIR="$BUILD_DIR/AccountSwitcherIcon.iconset"
 
 rm -rf "$APP_DIR"
@@ -35,6 +36,10 @@ if [[ -f "$ICON_SOURCE" ]]; then
   fi
 elif [[ -f "/Applications/Codex.app/Contents/Resources/icon.icns" ]]; then
   cp "/Applications/Codex.app/Contents/Resources/icon.icns" "$RESOURCES_DIR/AccountSwitcherIcon.icns"
+fi
+
+if [[ -f "$TOOLBAR_ICON_SOURCE" ]]; then
+  cp "$TOOLBAR_ICON_SOURCE" "$RESOURCES_DIR/ToolbarIcon.png"
 fi
 
 CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIR" swiftc "$ROOT_DIR/Sources/main.swift" \

@@ -105,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func loadCodexIcon() -> NSImage? {
         let bundledCandidates = [
+            Bundle.main.path(forResource: "ToolbarIcon", ofType: "png"),
             Bundle.main.path(forResource: "AccountSwitcherIcon", ofType: "png"),
             Bundle.main.path(forResource: "AccountSwitcherIcon", ofType: "icns")
         ].compactMap { $0 }
@@ -493,9 +494,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func testUsageReminder() {
         if let active = accounts.first(where: { $0.isActive }) {
-            sendUsageReminder(account: active, metric: "5hr", percent: active.fiveHourUsedPercent ?? reminderThreshold)
+            sendUsageReminder(account: active, metric: "5hr", percent: active.fiveHourUsedPercent ?? reminderThreshold, reportResult: true)
         } else {
-            sendNotification(title: "Codex usage reminder", subtitle: "No active account", body: "Open the switcher after adding a Codex account.")
+            sendNotification(
+                title: "Codex usage reminder",
+                subtitle: "No active account",
+                body: "Open the switcher after adding a Codex account.",
+                reportResult: true
+            )
         }
     }
 
@@ -646,29 +652,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    private func sendUsageReminder(account: CodexAccount, metric: String, percent: Int) {
+    private func sendUsageReminder(account: CodexAccount, metric: String, percent: Int, reportResult: Bool = false) {
         let label = displayLabel(for: account)
         sendNotification(
             title: "Codex usage is low",
             subtitle: "\(label) · \(metric) \(percent)%",
-            body: "\(account.email) is at or below \(reminderThreshold)%. Switch to another saved account from the menu bar when you are ready."
+            body: "\(account.email) is at or below \(reminderThreshold)%. Switch to another saved account from the menu bar when you are ready.",
+            reportResult: reportResult
         )
     }
 
-    private func sendNotification(title: String, subtitle: String, body: String) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.subtitle = subtitle
-        content.body = body
-        content.sound = .default
-        let request = UNNotificationRequest(
-            identifier: "codex-usage-\(UUID().uuidString)",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error {
-                NSLog("Codex Account Switcher notification failed: \(error.localizedDescription)")
+    private func sendNotification(title: String, subtitle: String, body: String, reportResult: Bool = false) {
+        ensureNotificationAuthorization { [weak self] isAuthorized, message in
+            guard let self else { return }
+            guard isAuthorized else {
+                if reportResult {
+                    DispatchQueue.main.async {
+                        self.showAlert(title: "Notifications are blocked", message: message ?? "Enable notifications for Codex Account Switcher in System Settings.")
+                    }
+                }
+                return
+            }
+
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.subtitle = subtitle
+            content.body = body
+            content.sound = .default
+            let request = UNNotificationRequest(
+                identifier: "codex-usage-\(UUID().uuidString)",
+                content: content,
+                trigger: UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
+            )
+            UNUserNotificationCenter.current().add(request) { error in
+                if let error {
+                    NSLog("Codex Account Switcher notification failed: \(error.localizedDescription)")
+                    if reportResult {
+                        DispatchQueue.main.async {
+                            self.showAlert(title: "Notification failed", message: error.localizedDescription)
+                        }
+                    }
+                } else if reportResult {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        self.showAlert(title: "Test notification sent", message: "If no banner appeared, check System Settings > Notifications > Codex Account Switcher and make sure alerts are enabled.")
+                    }
+                }
+            }
+        }
+    }
+
+    private func ensureNotificationAuthorization(_ completion: @escaping (Bool, String?) -> Void) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional:
+                completion(true, nil)
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+                    if let error {
+                        completion(false, error.localizedDescription)
+                    } else if granted {
+                        completion(true, nil)
+                    } else {
+                        completion(false, "Notification permission was not granted.")
+                    }
+                }
+            case .denied:
+                completion(false, "Notifications are disabled for Codex Account Switcher. Enable them in System Settings > Notifications, then try Test Notification again.")
+            @unknown default:
+                completion(false, "macOS returned an unknown notification permission state.")
             }
         }
     }
