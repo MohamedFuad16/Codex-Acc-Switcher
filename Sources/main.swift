@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import QuartzCore
 import UniformTypeIdentifiers
 import UserNotifications
 
@@ -156,34 +157,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if !isSwitching {
                 updateStatusTitle(for: active)
             }
-            menu.addItem(headerItem("Active: \(active.email) (\(displayPlan(active.plan)))"))
         } else {
             if !isSwitching {
                 statusItem.button?.title = ""
             }
-            menu.addItem(headerItem(lastError ?? "No active account"))
         }
 
+        menu.addItem(dashboardMenuItem())
         menu.addItem(.separator())
-
-        if let active = accounts.first(where: { $0.isActive }) {
-            let usageHeader = headerItem("Usage remaining")
-            usageHeader.image = NSImage(systemSymbolName: "gauge.with.dots.needle.bottom.50percent", accessibilityDescription: "Usage remaining")
-            menu.addItem(usageHeader)
-            menu.addItem(usageModeItem(
-                title: "5hr",
-                percent: remainingPercentText(fromUsed: active.fiveHourUsedPercent),
-                reset: resetTimeText(from: active.fiveHourUsage),
-                mode: .fiveHour
-            ))
-            menu.addItem(usageModeItem(
-                title: "Weekly",
-                percent: remainingPercentText(fromUsed: active.weeklyUsedPercent),
-                reset: resetDateText(from: active.weeklyUsage),
-                mode: .weekly
-            ))
-            menu.addItem(.separator())
-        }
 
         if accounts.isEmpty {
             let item = NSMenuItem(title: lastError ?? "No accounts available", action: nil, keyEquivalent: "")
@@ -287,6 +268,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.addItem(quit)
 
         statusItem.menu = menu
+    }
+
+    private func dashboardMenuItem() -> NSMenuItem {
+        let active = accounts.first(where: { $0.isActive })
+        let model = ToolbarDashboardModel(
+            title: active.map { "Codex: \(displayLabel(for: $0))" } ?? "Codex",
+            status: active.map { "\(displayPlan($0.plan)) account" } ?? "No active account",
+            email: active?.email ?? (lastError ?? "Add or refresh accounts"),
+            fiveHourPercent: active.map { remainingPercentText(fromUsed: $0.fiveHourUsedPercent) } ?? "--%",
+            fiveHourReset: active.map { resetTimeText(from: $0.fiveHourUsage) } ?? "",
+            weeklyPercent: active.map { remainingPercentText(fromUsed: $0.weeklyUsedPercent) } ?? "--%",
+            weeklyReset: active.map { resetDateText(from: $0.weeklyUsage) } ?? "",
+            accountCount: "\(accounts.count)",
+            icon: loadCodexIcon()
+        )
+        let item = NSMenuItem()
+        item.view = ToolbarDashboardView(model: model)
+        return item
     }
 
     private func advanceStatusAnimation() {
@@ -1131,6 +1130,206 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 }
 
+struct ToolbarDashboardModel {
+    let title: String
+    let status: String
+    let email: String
+    let fiveHourPercent: String
+    let fiveHourReset: String
+    let weeklyPercent: String
+    let weeklyReset: String
+    let accountCount: String
+    let icon: NSImage?
+}
+
+class GradientPanelView: NSView {
+    private let gradientLayer = CAGradientLayer()
+    private let overlayLayer = CALayer()
+
+    init(cornerRadius: CGFloat = 26, borderAlpha: CGFloat = 0.22) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = cornerRadius
+        layer?.masksToBounds = true
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.white.withAlphaComponent(borderAlpha).cgColor
+        gradientLayer.colors = [
+            NSColor(calibratedRed: 0.10, green: 0.04, blue: 0.32, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.25, green: 0.06, blue: 0.54, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.36, green: 0.14, blue: 0.56, alpha: 1).cgColor
+        ]
+        gradientLayer.startPoint = CGPoint(x: 0, y: 0)
+        gradientLayer.endPoint = CGPoint(x: 1, y: 1)
+        overlayLayer.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
+        layer?.addSublayer(gradientLayer)
+        layer?.addSublayer(overlayLayer)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        gradientLayer.frame = bounds
+        overlayLayer.frame = bounds.insetBy(dx: 1, dy: 1)
+        overlayLayer.cornerRadius = max(0, (layer?.cornerRadius ?? 0) - 1)
+    }
+}
+
+final class GlassCardView: NSView {
+    init(cornerRadius: CGFloat = 16) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = cornerRadius
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.11).cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+}
+
+enum StudioUI {
+    static let white = NSColor.white
+    static let muted = NSColor.white.withAlphaComponent(0.72)
+    static let cyan = NSColor(calibratedRed: 0.43, green: 0.89, blue: 1.0, alpha: 1)
+    static let lime = NSColor(calibratedRed: 0.77, green: 1.0, blue: 0.36, alpha: 1)
+    static let warning = NSColor(calibratedRed: 1.0, green: 0.79, blue: 0.09, alpha: 1)
+
+    static func label(_ text: String, size: CGFloat, weight: NSFont.Weight = .regular, color: NSColor = white) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.font = NSFont.systemFont(ofSize: size, weight: weight)
+        field.textColor = color
+        field.lineBreakMode = .byTruncatingTail
+        return field
+    }
+
+    static func symbol(_ name: String, size: CGFloat = 24, color: NSColor = white) -> NSImageView {
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: name)
+        image?.isTemplate = true
+        let imageView = NSImageView(image: image ?? NSImage())
+        imageView.contentTintColor = color
+        imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: size, weight: .semibold)
+        imageView.widthAnchor.constraint(equalToConstant: size + 4).isActive = true
+        imageView.heightAnchor.constraint(equalToConstant: size + 4).isActive = true
+        return imageView
+    }
+
+    static func primaryButton(_ title: String, target: AnyObject, action: Selector) -> NSButton {
+        let button = NSButton(title: title, target: target, action: action)
+        button.bezelStyle = .rounded
+        button.controlSize = .large
+        button.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        button.contentTintColor = cyan
+        return button
+    }
+}
+
+final class ToolbarDashboardView: GradientPanelView {
+    init(model: ToolbarDashboardModel) {
+        super.init(cornerRadius: 24, borderAlpha: 0.24)
+        frame = NSRect(x: 0, y: 0, width: 386, height: 278)
+
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.spacing = 14
+        root.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        root.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(root)
+
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: trailingAnchor),
+            root.topAnchor.constraint(equalTo: topAnchor),
+            root.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+
+        let header = NSStackView()
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 12
+
+        let titleStack = NSStackView()
+        titleStack.orientation = .vertical
+        titleStack.spacing = 4
+        titleStack.addArrangedSubview(StudioUI.label(model.title, size: 24, weight: .bold))
+        titleStack.addArrangedSubview(StudioUI.label(model.email, size: 13, color: StudioUI.muted))
+        header.addArrangedSubview(titleStack)
+
+        let spacer = NSView()
+        header.addArrangedSubview(spacer)
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let iconCard = GlassCardView(cornerRadius: 18)
+        iconCard.translatesAutoresizingMaskIntoConstraints = false
+        let iconView = NSImageView(image: model.icon ?? NSImage())
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconCard.addSubview(iconView)
+        NSLayoutConstraint.activate([
+            iconCard.widthAnchor.constraint(equalToConstant: 62),
+            iconCard.heightAnchor.constraint(equalToConstant: 62),
+            iconView.centerXAnchor.constraint(equalTo: iconCard.centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: iconCard.centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 38),
+            iconView.heightAnchor.constraint(equalToConstant: 38)
+        ])
+        header.addArrangedSubview(iconCard)
+        root.addArrangedSubview(header)
+
+        let metricGrid = NSGridView(views: [
+            [
+                metricCard(symbol: "timer", title: "5hr", value: model.fiveHourPercent, detail: model.fiveHourReset, color: StudioUI.cyan),
+                metricCard(symbol: "calendar", title: "Weekly", value: model.weeklyPercent, detail: model.weeklyReset, color: StudioUI.lime)
+            ],
+            [
+                metricCard(symbol: "person.2", title: "Accounts", value: model.accountCount, detail: "saved", color: StudioUI.warning),
+                metricCard(symbol: "checkmark.shield", title: "Status", value: model.status, detail: "active", color: StudioUI.cyan)
+            ]
+        ])
+        metricGrid.rowSpacing = 12
+        metricGrid.columnSpacing = 12
+        root.addArrangedSubview(metricGrid)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    private func metricCard(symbol: String, title: String, value: String, detail: String, color: NSColor) -> NSView {
+        let card = GlassCardView(cornerRadius: 14)
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.spacing = 5
+        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(stack)
+
+        let top = NSStackView()
+        top.orientation = .horizontal
+        top.alignment = .centerY
+        top.spacing = 8
+        top.addArrangedSubview(StudioUI.symbol(symbol, size: 18, color: color))
+        top.addArrangedSubview(StudioUI.label(title, size: 13, weight: .semibold, color: StudioUI.muted))
+        stack.addArrangedSubview(top)
+        stack.addArrangedSubview(StudioUI.label(value, size: 19, weight: .bold, color: .white))
+        stack.addArrangedSubview(StudioUI.label(detail.isEmpty ? " " : detail, size: 12, color: StudioUI.muted))
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: card.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            card.widthAnchor.constraint(equalToConstant: 167),
+            card.heightAnchor.constraint(equalToConstant: 82)
+        ])
+        return card
+    }
+}
+
 struct ManagedAppClone: Codable, Equatable {
     let id: UUID
     var index: Int
@@ -1703,12 +1902,15 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
     }
 
     private func buildInterface() {
-        guard let contentView = window?.contentView else { return }
+        guard let window else { return }
+        let background = GradientPanelView(cornerRadius: 0, borderAlpha: 0)
+        window.contentView = background
+        let contentView = background
 
         let root = NSStackView()
         root.orientation = .vertical
-        root.spacing = 14
-        root.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
+        root.spacing = 16
+        root.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
         root.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(root)
 
@@ -1719,17 +1921,65 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
             root.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
         ])
 
+        let header = NSStackView()
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 16
+        let titleStack = NSStackView()
+        titleStack.orientation = .vertical
+        titleStack.spacing = 5
+        titleStack.addArrangedSubview(StudioUI.label("Clone Studio", size: 30, weight: .bold))
+        titleStack.addArrangedSubview(StudioUI.label("Run isolated native and Electron app copies", size: 14, color: StudioUI.muted))
+        header.addArrangedSubview(titleStack)
+        let headerSpacer = NSView()
+        header.addArrangedSubview(headerSpacer)
+        headerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let healthBadge = GlassCardView(cornerRadius: 18)
+        let badgeStack = NSStackView()
+        badgeStack.orientation = .horizontal
+        badgeStack.alignment = .centerY
+        badgeStack.spacing = 8
+        badgeStack.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
+        badgeStack.translatesAutoresizingMaskIntoConstraints = false
+        healthBadge.addSubview(badgeStack)
+        badgeStack.addArrangedSubview(StudioUI.symbol("checkmark.seal.fill", size: 20, color: StudioUI.lime))
+        badgeStack.addArrangedSubview(StudioUI.label("Isolation: Ready", size: 14, weight: .semibold, color: StudioUI.lime))
+        NSLayoutConstraint.activate([
+            badgeStack.leadingAnchor.constraint(equalTo: healthBadge.leadingAnchor),
+            badgeStack.trailingAnchor.constraint(equalTo: healthBadge.trailingAnchor),
+            badgeStack.topAnchor.constraint(equalTo: healthBadge.topAnchor),
+            badgeStack.bottomAnchor.constraint(equalTo: healthBadge.bottomAnchor)
+        ])
+        header.addArrangedSubview(healthBadge)
+        root.addArrangedSubview(header)
+
+        let controlsCard = GlassCardView(cornerRadius: 18)
+        let controlsStack = NSStackView()
+        controlsStack.orientation = .vertical
+        controlsStack.spacing = 12
+        controlsStack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        controlsStack.translatesAutoresizingMaskIntoConstraints = false
+        controlsCard.addSubview(controlsStack)
+        NSLayoutConstraint.activate([
+            controlsStack.leadingAnchor.constraint(equalTo: controlsCard.leadingAnchor),
+            controlsStack.trailingAnchor.constraint(equalTo: controlsCard.trailingAnchor),
+            controlsStack.topAnchor.constraint(equalTo: controlsCard.topAnchor),
+            controlsStack.bottomAnchor.constraint(equalTo: controlsCard.bottomAnchor)
+        ])
+        root.addArrangedSubview(controlsCard)
+
         let sourceRow = NSStackView()
         sourceRow.orientation = .horizontal
         sourceRow.alignment = .centerY
         sourceRow.spacing = 10
         sourceRow.addArrangedSubview(label("Source app"))
         sourcePathField.lineBreakMode = .byTruncatingMiddle
+        sourcePathField.textColor = StudioUI.muted
         sourcePathField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         sourceRow.addArrangedSubview(sourcePathField)
         sourceRow.addArrangedSubview(button("Choose...", #selector(chooseSourceApp)))
         sourceRow.addArrangedSubview(button("Use Codex", #selector(useCodexApp)))
-        root.addArrangedSubview(sourceRow)
+        controlsStack.addArrangedSubview(sourceRow)
 
         let customizeRow = NSStackView()
         customizeRow.orientation = .horizontal
@@ -1737,15 +1987,17 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         customizeRow.spacing = 10
         customizeRow.addArrangedSubview(label("Clone name"))
         cloneNameField.placeholderString = "Use source app name"
+        styleInput(cloneNameField)
         cloneNameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         customizeRow.addArrangedSubview(cloneNameField)
         customizeRow.addArrangedSubview(label("Icon"))
         iconPathField.lineBreakMode = .byTruncatingMiddle
+        iconPathField.textColor = StudioUI.muted
         iconPathField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         customizeRow.addArrangedSubview(iconPathField)
         customizeRow.addArrangedSubview(button("Choose Icon...", #selector(chooseIcon)))
         customizeRow.addArrangedSubview(button("Clear Icon", #selector(clearIcon)))
-        root.addArrangedSubview(customizeRow)
+        controlsStack.addArrangedSubview(customizeRow)
 
         let actionRow = NSStackView()
         actionRow.orientation = .horizontal
@@ -1754,6 +2006,7 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         actionRow.addArrangedSubview(label("Clones"))
         cloneCountField.alignment = .center
         cloneCountField.maximumNumberOfLines = 1
+        styleInput(cloneCountField)
         cloneCountField.widthAnchor.constraint(equalToConstant: 44).isActive = true
         actionRow.addArrangedSubview(cloneCountField)
         cloneCountStepper.minValue = 1
@@ -1773,13 +2026,16 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         progress.controlSize = .small
         progress.isDisplayedWhenStopped = false
         actionRow.addArrangedSubview(progress)
-        root.addArrangedSubview(actionRow)
+        controlsStack.addArrangedSubview(actionRow)
 
         let scrollView = NSScrollView()
-        scrollView.borderType = .bezelBorder
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.documentView = tableView
-        tableView.usesAlternatingRowBackgroundColors = true
+        tableView.backgroundColor = .clear
+        tableView.gridColor = NSColor.white.withAlphaComponent(0.12)
+        tableView.usesAlternatingRowBackgroundColors = false
         tableView.allowsMultipleSelection = true
         tableView.delegate = self
         tableView.dataSource = self
@@ -1788,14 +2044,26 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         addColumn("bundle", "Bundle ID", 270)
         addColumn("data", "Data Folder", 300)
         addColumn("status", "Status", 120)
-        root.addArrangedSubview(scrollView)
+        let tableCard = GlassCardView(cornerRadius: 18)
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        tableCard.addSubview(scrollView)
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: tableCard.leadingAnchor, constant: 12),
+            scrollView.trailingAnchor.constraint(equalTo: tableCard.trailingAnchor, constant: -12),
+            scrollView.topAnchor.constraint(equalTo: tableCard.topAnchor, constant: 12),
+            scrollView.bottomAnchor.constraint(equalTo: tableCard.bottomAnchor, constant: -12)
+        ])
+        root.addArrangedSubview(tableCard)
         scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
 
         let logScroll = NSScrollView()
-        logScroll.borderType = .bezelBorder
+        logScroll.borderType = .noBorder
+        logScroll.drawsBackground = false
         logScroll.hasVerticalScroller = true
         logScroll.documentView = logTextView
         logTextView.isEditable = false
+        logTextView.backgroundColor = NSColor.white.withAlphaComponent(0.08)
+        logTextView.textColor = StudioUI.muted
         logTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         logTextView.string = "Ready."
         root.addArrangedSubview(logScroll)
@@ -1810,16 +2078,20 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
     }
 
     private func label(_ value: String) -> NSTextField {
-        let field = NSTextField(labelWithString: value)
-        field.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
-        return field
+        StudioUI.label(value, size: 13, weight: .semibold)
     }
 
     private func button(_ title: String, _ action: Selector) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
-        button.bezelStyle = .rounded
-        button.controlSize = .regular
-        return button
+        StudioUI.primaryButton(title, target: self, action: action)
+    }
+
+    private func styleInput(_ field: NSTextField) {
+        field.isBezeled = true
+        field.isBordered = false
+        field.drawsBackground = true
+        field.backgroundColor = NSColor.white.withAlphaComponent(0.14)
+        field.textColor = .white
+        field.font = NSFont.systemFont(ofSize: 13, weight: .medium)
     }
 
     private func reloadClones() {
@@ -2040,6 +2312,8 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
                 textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
             ])
         }
+        textField.textColor = StudioUI.white.withAlphaComponent(tableColumn.identifier.rawValue == "status" ? 0.86 : 0.96)
+        textField.font = NSFont.systemFont(ofSize: 12.5, weight: tableColumn.identifier.rawValue == "name" ? .semibold : .regular)
         textField.stringValue = value
         return cell
     }
