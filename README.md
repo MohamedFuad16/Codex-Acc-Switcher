@@ -28,9 +28,9 @@
 
 ## 📖 Overview
 
-**Codex Account Switcher** is an ultra-lightweight, blazing-fast macOS menu bar utility built in pure Swift. It eliminates the friction of managing multiple OpenAI Codex / ChatGPT credentials on your local machine. 
+**Codex Account Switcher** is an ultra-lightweight, blazing-fast macOS menu bar utility built in pure Swift. It eliminates the friction of managing multiple OpenAI Codex / ChatGPT credentials on your local machine.
 
-With zero external dependencies and a footprint under 300KB, it integrates directly with standard macOS system APIs to hot-swap account tokens, safely restart active desktop applications, and feed real-time usage budgets directly into your status bar.
+With zero external package dependencies, it integrates directly with standard macOS system APIs to hot-swap account tokens, safely restart active desktop applications, feed real-time usage budgets into your status bar, and manage isolated multi-instance app clones from a native Mac window.
 
 ---
 
@@ -64,6 +64,13 @@ With zero external dependencies and a footprint under 300KB, it integrates direc
 *   `Sources/icon.png` is packaged as the application icon.
 *   `Sources/toolbar-icon.png` is bundled separately for the menu bar status item.
 
+### 🧩 Isolated App Instance Manager
+*   Open **Open Instance Manager** from the menu bar dropdown to clone any `.app` bundle.
+*   Create 1-12 managed clones with unique bundle identifiers and separate app data roots.
+*   Launch selected clones or all clones at once.
+*   For Codex/Electron-style apps, each clone is launched with isolated `HOME`, `CODEX_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `TMPDIR`, and `--user-data-dir` values so memory, local settings, cache, and Chromium profile data stay separated.
+*   Reveal clone bundles, open their data folders, or remove clone bundles while optionally preserving their data.
+
 ---
 
 ## ⚙️ How It Works
@@ -76,8 +83,11 @@ The Swift menu bar orchestrates token swapping and app lifecycle management secu
        ├─► [1] Swaps active credentials safely in registry.json & auth.json
        ├─► [2] Triggers background process termination signals (SIGTERM/SIGKILL)
        ├─► [3] Relaunches desktop app via CLI fallback (`open -a Codex`)
-       └─► [4] Starts smooth Braille spinner on Main Thread (.common Run Loop)
+       ├─► [4] Starts smooth Braille spinner on Main Thread (.common Run Loop)
+       └─► [5] Opens the native Instance Manager for isolated app clones
 ```
+
+The Instance Manager uses a bundle-clone strategy: each clone gets a rewritten `CFBundleIdentifier` and display name, is ad-hoc signed locally, and is registered with Launch Services. Runtime isolation is handled by launching the clone process with a dedicated data directory and environment variables. This works best for apps that respect process environment paths or Electron/Chromium `--user-data-dir`; some apps may still use hardcoded shared locations.
 
 ---
 
@@ -109,11 +119,16 @@ Open the menu bar item and choose **Usage Reminder → Test Notification**. If m
 
 ## 🛠️ Development
 
-This utility is built completely in Swift with **zero external package dependencies** (no CocoaPods, no Swift Package Manager dependencies, no dynamic frameworks), compiled directly with `swiftc`. This results in an incredibly responsive, native application with a negligible memory footprint.
+This utility is built completely in Swift with **zero external package dependencies**. The app is now package-first through Swift Package Manager, while `build.sh` still assembles the signed macOS `.app` bundle layout.
 
 *   **Language**: Swift 5.9+
-*   **APIs**: Cocoa / AppKit (`NSStatusBar`, `NSStatusItem`, `NSMenu`, `Process`, `Pipe`)
-*   **Compiler**: `swiftc` targeted for macOS 14.0+ (`arm64-apple-macosx14.0`)
+*   **APIs**: Cocoa / AppKit (`NSStatusBar`, `NSStatusItem`, `NSMenu`, `NSWindow`, `NSTableView`, `Process`, `Pipe`)
+*   **Build**: Swift Package Manager targeting macOS 14.0+
+
+Build the executable directly:
+```bash
+swift build --product CodexAccountSwitcher
+```
 
 To test changes rapidly without installing:
 ```bash

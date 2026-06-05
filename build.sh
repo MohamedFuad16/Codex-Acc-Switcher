@@ -9,12 +9,12 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 BIN_PATH="$MACOS_DIR/CodexAccountSwitcher"
-MODULE_CACHE_DIR="$BUILD_DIR/ModuleCache"
+SWIFTPM_BUILD_DIR="$BUILD_DIR/SwiftPM"
 ICON_SOURCE="$ROOT_DIR/Sources/icon.png"
 TOOLBAR_ICON_SOURCE="$ROOT_DIR/Sources/toolbar-icon.png"
 
-rm -rf "$APP_DIR"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$MODULE_CACHE_DIR"
+rm -rf "$APP_DIR" "$BUILD_DIR/ModuleCache"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$SWIFTPM_BUILD_DIR"
 
 if [[ -f "$ICON_SOURCE" ]]; then
   cp "$ICON_SOURCE" "$RESOURCES_DIR/AccountSwitcherIcon.png"
@@ -26,12 +26,20 @@ if [[ -f "$TOOLBAR_ICON_SOURCE" ]]; then
   cp "$TOOLBAR_ICON_SOURCE" "$RESOURCES_DIR/ToolbarIcon.png"
 fi
 
-CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIR" swiftc "$ROOT_DIR/Sources/main.swift" \
-  -target arm64-apple-macosx14.0 \
-  -module-cache-path "$MODULE_CACHE_DIR" \
-  -framework AppKit \
-  -framework UserNotifications \
-  -o "$BIN_PATH"
+swift build \
+  -c release \
+  --product CodexAccountSwitcher \
+  --scratch-path "$SWIFTPM_BUILD_DIR" \
+  --package-path "$ROOT_DIR" >/dev/null
+
+SWIFTPM_BIN_DIR="$(swift build \
+  -c release \
+  --product CodexAccountSwitcher \
+  --scratch-path "$SWIFTPM_BUILD_DIR" \
+  --package-path "$ROOT_DIR" \
+  --show-bin-path)"
+
+cp "$SWIFTPM_BIN_DIR/CodexAccountSwitcher" "$BIN_PATH"
 
 cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

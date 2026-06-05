@@ -1,5 +1,7 @@
 import AppKit
+import Darwin
 import Foundation
+import UniformTypeIdentifiers
 import UserNotifications
 
 struct CodexAccount {
@@ -39,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var switchAnimationTimer: Timer?
     private var switchAnimationFrame = 0
     private var switchingTitle = "Switching"
+    private var instanceManagerWindowController: InstanceManagerWindowController?
     private let switchAnimationFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     private let statusPulseFrames = ["·", "•", "·", " "]
     private var notifiedLowUsageKeys = Set<String>()
@@ -199,6 +202,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 menu.addItem(item)
             }
         }
+
+        menu.addItem(.separator())
+
+        let instanceManager = NSMenuItem(title: "Open Instance Manager", action: #selector(openInstanceManager), keyEquivalent: "i")
+        instanceManager.target = self
+        menu.addItem(instanceManager)
 
         menu.addItem(.separator())
 
@@ -418,6 +427,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func refreshNow() {
         refreshAccounts()
+    }
+
+    @objc private func openInstanceManager() {
+        if instanceManagerWindowController == nil {
+            instanceManagerWindowController = InstanceManagerWindowController()
+        }
+        instanceManagerWindowController?.showWindow(self)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func setFiveHourMode() {
@@ -1111,6 +1128,716 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func shellEscaped(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
+struct ManagedAppClone: Codable, Equatable {
+    let id: UUID
+    var index: Int
+    var displayName: String
+    var sourceAppPath: String
+    var cloneAppPath: String
+    var dataPath: String
+    var bundleIdentifier: String
+    var createdAt: Date
+    var lastLaunchAt: Date?
+    var lastPID: Int32?
+}
+
+final class InstanceManagerStore {
+    static let shared = InstanceManagerStore()
+
+    private let clonesKey = "managedAppClones"
+    private let selectedSourceKey = "instanceManagerSelectedSource"
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
+    var cloneRoot: URL {
+        URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Applications")
+            .appendingPathComponent("Codex Account Switcher Clones")
+    }
+
+    var dataRoot: URL {
+        URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/Codex Account Switcher/Instances")
+    }
+
+    var defaultCodexAppURL: URL {
+        URL(fileURLWithPath: "/Applications/Codex.app")
+    }
+
+    var selectedSourceURL: URL? {
+        get {
+            guard let path = UserDefaults.standard.string(forKey: selectedSourceKey), !path.isEmpty else {
+                return FileManager.default.fileExists(atPath: defaultCodexAppURL.path) ? defaultCodexAppURL : nil
+            }
+            return URL(fileURLWithPath: path)
+        }
+        set {
+            UserDefaults.standard.set(newValue?.path, forKey: selectedSourceKey)
+        }
+    }
+
+    func loadClones() -> [ManagedAppClone] {
+        guard let data = UserDefaults.standard.data(forKey: clonesKey),
+              let clones = try? decoder.decode([ManagedAppClone].self, from: data) else {
+            return []
+        }
+        return clones.sorted { $0.index < $1.index }
+    }
+
+    func saveClones(_ clones: [ManagedAppClone]) {
+        guard let data = try? encoder.encode(clones.sorted(by: { $0.index < $1.index })) else { return }
+        UserDefaults.standard.set(data, forKey: clonesKey)
+    }
+}
+
+enum AppCloneError: LocalizedError {
+    case invalidApp(URL)
+    case missingInfoPlist(URL)
+    case missingExecutable(URL)
+    case commandFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidApp(let url):
+            return "\(url.path) is not a readable .app bundle."
+        case .missingInfoPlist(let url):
+            return "Could not read Info.plist for \(url.lastPathComponent)."
+        case .missingExecutable(let url):
+            return "Could not find the executable for \(url.lastPathComponent)."
+        case .commandFailed(let message):
+            return message
+        }
+    }
+}
+
+final class AppCloneManager {
+    private let store: InstanceManagerStore
+    private let fileManager = FileManager.default
+
+    init(store: InstanceManagerStore) {
+        self.store = store
+    }
+
+    func createClones(sourceAppURL: URL, count: Int) throws -> [ManagedAppClone] {
+        let sourceURL = sourceAppURL.standardizedFileURL
+        guard sourceURL.pathExtension == "app",
+              fileManager.fileExists(atPath: sourceURL.path) else {
+            throw AppCloneError.invalidApp(sourceURL)
+        }
+
+        try fileManager.createDirectory(at: store.cloneRoot, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: store.dataRoot, withIntermediateDirectories: true)
+
+        let info = try readInfoPlist(in: sourceURL)
+        let sourceName = sourceURL.deletingPathExtension().lastPathComponent
+        let baseBundleID = sanitizedBundleID(info["CFBundleIdentifier"] as? String ?? "local.\(sourceName)")
+        let existing = store.loadClones()
+        let retained = existing.filter { $0.sourceAppPath != sourceURL.path }
+        let oldForSource = existing.filter { $0.sourceAppPath == sourceURL.path }
+
+        for clone in oldForSource where clone.cloneAppPath.hasPrefix(store.cloneRoot.path) {
+            try? fileManager.removeItem(atPath: clone.cloneAppPath)
+        }
+
+        var clones: [ManagedAppClone] = []
+        for index in 1...max(1, min(12, count)) {
+            let number = String(format: "%02d", index)
+            let displayName = "\(sourceName) \(number)"
+            let cloneURL = store.cloneRoot.appendingPathComponent("\(displayName).app")
+            let dataURL = store.dataRoot.appendingPathComponent("\(safeFolderName(sourceName))-\(number)")
+            let bundleID = "\(baseBundleID).managedclone.\(number)"
+
+            if fileManager.fileExists(atPath: cloneURL.path) {
+                try fileManager.removeItem(at: cloneURL)
+            }
+            try fileManager.copyItem(at: sourceURL, to: cloneURL)
+            try prepareDataFolders(at: dataURL)
+            try rewriteInfoPlist(in: cloneURL, displayName: displayName, bundleIdentifier: bundleID)
+            try signAppIfPossible(cloneURL)
+            registerWithLaunchServices(cloneURL)
+
+            clones.append(ManagedAppClone(
+                id: UUID(),
+                index: index,
+                displayName: displayName,
+                sourceAppPath: sourceURL.path,
+                cloneAppPath: cloneURL.path,
+                dataPath: dataURL.path,
+                bundleIdentifier: bundleID,
+                createdAt: Date(),
+                lastLaunchAt: nil,
+                lastPID: nil
+            ))
+        }
+
+        store.saveClones(retained + clones)
+        store.selectedSourceURL = sourceURL
+        return clones
+    }
+
+    func launch(_ clone: ManagedAppClone) throws -> ManagedAppClone {
+        let cloneURL = URL(fileURLWithPath: clone.cloneAppPath)
+        let executableURL = try executableURL(for: cloneURL)
+        try prepareDataFolders(at: URL(fileURLWithPath: clone.dataPath))
+
+        let process = Process()
+        process.executableURL = executableURL
+        process.currentDirectoryURL = cloneURL.deletingLastPathComponent()
+        process.arguments = launchArguments(for: clone)
+        process.environment = launchEnvironment(for: clone)
+        try process.run()
+
+        var updated = clone
+        updated.lastLaunchAt = Date()
+        updated.lastPID = process.processIdentifier
+        replaceStoredClone(updated)
+        return updated
+    }
+
+    func remove(_ clones: [ManagedAppClone], deleteData: Bool) {
+        var stored = store.loadClones()
+        let ids = Set(clones.map(\.id))
+        for clone in clones {
+            if clone.cloneAppPath.hasPrefix(store.cloneRoot.path) {
+                try? fileManager.removeItem(atPath: clone.cloneAppPath)
+            }
+            if deleteData, clone.dataPath.hasPrefix(store.dataRoot.path) {
+                try? fileManager.removeItem(atPath: clone.dataPath)
+            }
+        }
+        stored.removeAll { ids.contains($0.id) }
+        store.saveClones(stored)
+    }
+
+    func reveal(_ clone: ManagedAppClone) {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: clone.cloneAppPath)])
+    }
+
+    func openDataFolder(_ clone: ManagedAppClone) {
+        NSWorkspace.shared.open(URL(fileURLWithPath: clone.dataPath))
+    }
+
+    private func replaceStoredClone(_ clone: ManagedAppClone) {
+        var stored = store.loadClones()
+        if let index = stored.firstIndex(where: { $0.id == clone.id }) {
+            stored[index] = clone
+        }
+        store.saveClones(stored)
+    }
+
+    private func launchArguments(for clone: ManagedAppClone) -> [String] {
+        let dataURL = URL(fileURLWithPath: clone.dataPath)
+        let userDataURL = dataURL.appendingPathComponent("electron-user-data")
+        return [
+            "--user-data-dir=\(userDataURL.path)",
+            "--no-first-run"
+        ]
+    }
+
+    private func launchEnvironment(for clone: ManagedAppClone) -> [String: String] {
+        let dataURL = URL(fileURLWithPath: clone.dataPath)
+        var environment = ProcessInfo.processInfo.environment
+        environment["CODEX_SWITCHER_INSTANCE_ID"] = clone.id.uuidString
+        environment["CODEX_SWITCHER_INSTANCE_NAME"] = clone.displayName
+        environment["CODEX_SWITCHER_REAL_HOME"] = NSHomeDirectory()
+        environment["HOME"] = dataURL.appendingPathComponent("home").path
+        environment["CODEX_HOME"] = dataURL.appendingPathComponent("codex-home").path
+        environment["XDG_CONFIG_HOME"] = dataURL.appendingPathComponent("config").path
+        environment["XDG_CACHE_HOME"] = dataURL.appendingPathComponent("cache").path
+        environment["TMPDIR"] = dataURL.appendingPathComponent("tmp").path
+        environment["PATH"] = augmentedPath(from: environment["PATH"])
+
+        let bundledNode = "/Applications/Codex.app/Contents/Resources/node"
+        if fileManager.isExecutableFile(atPath: bundledNode) {
+            environment["CODEX_AUTH_NODE_EXECUTABLE"] = bundledNode
+        }
+        let bundledCodex = "/Applications/Codex.app/Contents/Resources/codex"
+        if fileManager.isExecutableFile(atPath: bundledCodex) {
+            environment["CODEX_CLI_PATH"] = bundledCodex
+        }
+        return environment
+    }
+
+    private func augmentedPath(from currentPath: String?) -> String {
+        let realHome = NSHomeDirectory()
+        let candidates = [
+            "/Applications/Codex.app/Contents/Resources",
+            "\(realHome)/.nvm/versions/node/v20.11.0/bin",
+            "\(realHome)/.local/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin"
+        ]
+
+        var seen = Set<String>()
+        var parts: [String] = []
+        for path in candidates + (currentPath?.split(separator: ":").map(String.init) ?? []) {
+            guard !path.isEmpty, !seen.contains(path) else { continue }
+            seen.insert(path)
+            parts.append(path)
+        }
+        return parts.joined(separator: ":")
+    }
+
+    private func prepareDataFolders(at dataURL: URL) throws {
+        let folders = [
+            ["home"],
+            ["home", "Library"],
+            ["home", "Library", "Application Support"],
+            ["home", "Library", "Caches"],
+            ["home", "Library", "Preferences"],
+            ["codex-home"],
+            ["config"],
+            ["cache"],
+            ["tmp"],
+            ["electron-user-data"]
+        ]
+
+        for components in folders {
+            let folderURL = components.reduce(dataURL) { partial, component in
+                partial.appendingPathComponent(component)
+            }
+            try fileManager.createDirectory(
+                at: folderURL,
+                withIntermediateDirectories: true
+            )
+        }
+    }
+
+    private func readInfoPlist(in appURL: URL) throws -> [String: Any] {
+        let plistURL = appURL.appendingPathComponent("Contents/Info.plist")
+        guard let data = try? Data(contentsOf: plistURL),
+              let object = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let plist = object as? [String: Any] else {
+            throw AppCloneError.missingInfoPlist(appURL)
+        }
+        return plist
+    }
+
+    private func rewriteInfoPlist(in appURL: URL, displayName: String, bundleIdentifier: String) throws {
+        let plistURL = appURL.appendingPathComponent("Contents/Info.plist")
+        var plist = try readInfoPlist(in: appURL)
+        plist["CFBundleIdentifier"] = bundleIdentifier
+        plist["CFBundleName"] = displayName
+        plist["CFBundleDisplayName"] = displayName
+        plist["LSMultipleInstancesProhibited"] = false
+        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        try data.write(to: plistURL, options: .atomic)
+    }
+
+    private func executableURL(for appURL: URL) throws -> URL {
+        let info = try readInfoPlist(in: appURL)
+        guard let executableName = info["CFBundleExecutable"] as? String, !executableName.isEmpty else {
+            throw AppCloneError.missingExecutable(appURL)
+        }
+        let executableURL = appURL.appendingPathComponent("Contents/MacOS/\(executableName)")
+        guard fileManager.isExecutableFile(atPath: executableURL.path) else {
+            throw AppCloneError.missingExecutable(appURL)
+        }
+        return executableURL
+    }
+
+    private func signAppIfPossible(_ appURL: URL) throws {
+        guard fileManager.isExecutableFile(atPath: "/usr/bin/codesign") else { return }
+        let result = runSync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", appURL.path])
+        if result.status != 0 {
+            throw AppCloneError.commandFailed("Signing \(appURL.lastPathComponent) failed:\n\(result.output)")
+        }
+    }
+
+    private func registerWithLaunchServices(_ appURL: URL) {
+        let lsregister = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+        guard fileManager.isExecutableFile(atPath: lsregister) else { return }
+        _ = runSync(lsregister, ["-f", appURL.path])
+    }
+
+    private func runSync(_ executable: String, _ arguments: [String]) -> CommandResult {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return CommandResult(
+                status: process.terminationStatus,
+                output: String(data: data, encoding: .utf8) ?? ""
+            )
+        } catch {
+            return CommandResult(status: 127, output: error.localizedDescription)
+        }
+    }
+
+    private func sanitizedBundleID(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.")
+        let cleaned = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
+        let result = String(cleaned)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".-"))
+            .lowercased()
+        return result.contains(".") ? result : "local.\(result.isEmpty ? "app" : result)"
+    }
+
+    private func safeFolderName(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_ "))
+        let cleaned = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
+        return String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+final class InstanceManagerWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
+    private let store = InstanceManagerStore.shared
+    private lazy var manager = AppCloneManager(store: store)
+    private var clones: [ManagedAppClone] = []
+    private var sourceURL: URL? {
+        didSet {
+            store.selectedSourceURL = sourceURL
+            sourcePathField.stringValue = sourceURL?.path ?? "Choose an app bundle"
+        }
+    }
+
+    private let sourcePathField = NSTextField(labelWithString: "")
+    private let cloneCountField = NSTextField(string: "6")
+    private let cloneCountStepper = NSStepper()
+    private let tableView = NSTableView()
+    private let logTextView = NSTextView()
+    private let progress = NSProgressIndicator()
+
+    init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 980, height: 640),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Codex Account Switcher"
+        window.minSize = NSSize(width: 780, height: 520)
+        super.init(window: window)
+        window.center()
+        buildInterface()
+        sourceURL = store.selectedSourceURL
+        reloadClones()
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    private func buildInterface() {
+        guard let contentView = window?.contentView else { return }
+
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.spacing = 14
+        root.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
+        root.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(root)
+
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            root.topAnchor.constraint(equalTo: contentView.topAnchor),
+            root.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        ])
+
+        let sourceRow = NSStackView()
+        sourceRow.orientation = .horizontal
+        sourceRow.alignment = .centerY
+        sourceRow.spacing = 10
+        sourceRow.addArrangedSubview(label("Source app"))
+        sourcePathField.lineBreakMode = .byTruncatingMiddle
+        sourcePathField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        sourceRow.addArrangedSubview(sourcePathField)
+        sourceRow.addArrangedSubview(button("Choose...", #selector(chooseSourceApp)))
+        sourceRow.addArrangedSubview(button("Use Codex", #selector(useCodexApp)))
+        root.addArrangedSubview(sourceRow)
+
+        let actionRow = NSStackView()
+        actionRow.orientation = .horizontal
+        actionRow.alignment = .centerY
+        actionRow.spacing = 10
+        actionRow.addArrangedSubview(label("Clones"))
+        cloneCountField.alignment = .center
+        cloneCountField.maximumNumberOfLines = 1
+        cloneCountField.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        actionRow.addArrangedSubview(cloneCountField)
+        cloneCountStepper.minValue = 1
+        cloneCountStepper.maxValue = 12
+        cloneCountStepper.integerValue = 6
+        cloneCountStepper.target = self
+        cloneCountStepper.action = #selector(stepperChanged)
+        actionRow.addArrangedSubview(cloneCountStepper)
+        actionRow.addArrangedSubview(button("Create/Rebuild", #selector(createClones)))
+        actionRow.addArrangedSubview(button("Run Selected", #selector(runSelected)))
+        actionRow.addArrangedSubview(button("Run All", #selector(runAll)))
+        actionRow.addArrangedSubview(button("Reveal", #selector(revealSelected)))
+        actionRow.addArrangedSubview(button("Open Data", #selector(openSelectedData)))
+        actionRow.addArrangedSubview(button("Remove", #selector(removeSelected)))
+        actionRow.addArrangedSubview(button("Refresh", #selector(refreshClicked)))
+        progress.style = .spinning
+        progress.controlSize = .small
+        progress.isDisplayedWhenStopped = false
+        actionRow.addArrangedSubview(progress)
+        root.addArrangedSubview(actionRow)
+
+        let scrollView = NSScrollView()
+        scrollView.borderType = .bezelBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.documentView = tableView
+        tableView.usesAlternatingRowBackgroundColors = true
+        tableView.allowsMultipleSelection = true
+        tableView.delegate = self
+        tableView.dataSource = self
+        addColumn("index", "#", 54)
+        addColumn("name", "App Clone", 180)
+        addColumn("bundle", "Bundle ID", 270)
+        addColumn("data", "Data Folder", 300)
+        addColumn("status", "Status", 120)
+        root.addArrangedSubview(scrollView)
+        scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
+
+        let logScroll = NSScrollView()
+        logScroll.borderType = .bezelBorder
+        logScroll.hasVerticalScroller = true
+        logScroll.documentView = logTextView
+        logTextView.isEditable = false
+        logTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        logTextView.string = "Ready."
+        root.addArrangedSubview(logScroll)
+        logScroll.heightAnchor.constraint(equalToConstant: 96).isActive = true
+    }
+
+    private func addColumn(_ identifier: String, _ title: String, _ width: CGFloat) {
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
+        column.title = title
+        column.width = width
+        tableView.addTableColumn(column)
+    }
+
+    private func label(_ value: String) -> NSTextField {
+        let field = NSTextField(labelWithString: value)
+        field.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        return field
+    }
+
+    private func button(_ title: String, _ action: Selector) -> NSButton {
+        let button = NSButton(title: title, target: self, action: action)
+        button.bezelStyle = .rounded
+        button.controlSize = .regular
+        return button
+    }
+
+    private func reloadClones() {
+        clones = store.loadClones()
+        tableView.reloadData()
+    }
+
+    @objc private func stepperChanged() {
+        cloneCountField.stringValue = "\(cloneCountStepper.integerValue)"
+    }
+
+    @objc private func chooseSourceApp() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose app bundle"
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK {
+            sourceURL = panel.url
+        }
+    }
+
+    @objc private func useCodexApp() {
+        sourceURL = store.defaultCodexAppURL
+    }
+
+    @objc private func createClones() {
+        guard let sourceURL else {
+            showError("Choose an app bundle first.")
+            return
+        }
+        let count = max(1, min(12, Int(cloneCountField.stringValue) ?? cloneCountStepper.integerValue))
+        setBusy(true)
+        appendLog("Creating \(count) clone(s) from \(sourceURL.lastPathComponent)...")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let newClones = try self.manager.createClones(sourceAppURL: sourceURL, count: count)
+                DispatchQueue.main.async {
+                    self.setBusy(false)
+                    self.reloadClones()
+                    self.appendLog("Created \(newClones.count) isolated clone(s).")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.setBusy(false)
+                    self.showError(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    @objc private func runSelected() {
+        let selected = selectedClones()
+        guard !selected.isEmpty else {
+            showError("Select at least one clone to run.")
+            return
+        }
+        launch(selected)
+    }
+
+    @objc private func runAll() {
+        guard !clones.isEmpty else {
+            showError("Create clones first.")
+            return
+        }
+        launch(clones)
+    }
+
+    @objc private func revealSelected() {
+        guard let clone = selectedClones().first else { return }
+        manager.reveal(clone)
+    }
+
+    @objc private func openSelectedData() {
+        guard let clone = selectedClones().first else { return }
+        manager.openDataFolder(clone)
+    }
+
+    @objc private func removeSelected() {
+        let selected = selectedClones()
+        guard !selected.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = "Remove selected clone(s)?"
+        alert.informativeText = "The app bundle clone will be removed. Choose whether to also delete the isolated data folder."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Remove App Only")
+        alert.addButton(withTitle: "Remove App + Data")
+        alert.addButton(withTitle: "Cancel")
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn || response == .alertSecondButtonReturn else { return }
+        manager.remove(selected, deleteData: response == .alertSecondButtonReturn)
+        reloadClones()
+        appendLog("Removed \(selected.count) clone(s).")
+    }
+
+    @objc private func refreshClicked() {
+        reloadClones()
+        appendLog("Refreshed clone list.")
+    }
+
+    private func launch(_ launchClones: [ManagedAppClone]) {
+        setBusy(true)
+        appendLog("Launching \(launchClones.count) clone(s)...")
+        DispatchQueue.global(qos: .userInitiated).async {
+            var launched = 0
+            var failures: [String] = []
+            for clone in launchClones {
+                do {
+                    _ = try self.manager.launch(clone)
+                    launched += 1
+                } catch {
+                    failures.append("\(clone.displayName): \(error.localizedDescription)")
+                }
+            }
+            DispatchQueue.main.async {
+                self.setBusy(false)
+                self.reloadClones()
+                if failures.isEmpty {
+                    self.appendLog("Launched \(launched) clone(s).")
+                } else {
+                    self.appendLog("Launched \(launched), failed \(failures.count).\n\(failures.joined(separator: "\n"))")
+                }
+            }
+        }
+    }
+
+    private func selectedClones() -> [ManagedAppClone] {
+        tableView.selectedRowIndexes.compactMap { index in
+            guard index >= 0 && index < clones.count else { return nil }
+            return clones[index]
+        }
+    }
+
+    private func appendLog(_ message: String) {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .medium
+        let line = "[\(formatter.string(from: Date()))] \(message)"
+        logTextView.string = logTextView.string.isEmpty ? line : "\(logTextView.string)\n\(line)"
+        logTextView.scrollToEndOfDocument(nil)
+    }
+
+    private func setBusy(_ busy: Bool) {
+        busy ? progress.startAnimation(nil) : progress.stopAnimation(nil)
+    }
+
+    private func showError(_ message: String) {
+        appendLog("Error: \(message)")
+        let alert = NSAlert()
+        alert.messageText = "Instance Manager"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        clones.count
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row >= 0, row < clones.count, let tableColumn else { return nil }
+        let clone = clones[row]
+        let value: String
+        switch tableColumn.identifier.rawValue {
+        case "index":
+            value = String(format: "%02d", clone.index)
+        case "name":
+            value = clone.displayName
+        case "bundle":
+            value = clone.bundleIdentifier
+        case "data":
+            value = clone.dataPath
+        case "status":
+            value = statusText(for: clone)
+        default:
+            value = ""
+        }
+
+        let identifier = NSUserInterfaceItemIdentifier("cell-\(tableColumn.identifier.rawValue)")
+        let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? NSTableCellView()
+        cell.identifier = identifier
+        let textField = cell.textField ?? NSTextField(labelWithString: "")
+        textField.lineBreakMode = .byTruncatingMiddle
+        textField.translatesAutoresizingMaskIntoConstraints = false
+        if textField.superview == nil {
+            cell.addSubview(textField)
+            cell.textField = textField
+            NSLayoutConstraint.activate([
+                textField.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+                textField.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
+                textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+            ])
+        }
+        textField.stringValue = value
+        return cell
+    }
+
+    private func statusText(for clone: ManagedAppClone) -> String {
+        if let pid = clone.lastPID, kill(pid, 0) == 0 {
+            return "Running \(pid)"
+        }
+        if clone.lastLaunchAt != nil {
+            return "Last launched"
+        }
+        return "Ready"
     }
 }
 
