@@ -1154,9 +1154,10 @@ class GradientPanelView: NSView {
         layer?.borderWidth = 1
         layer?.borderColor = NSColor.white.withAlphaComponent(borderAlpha).cgColor
         gradientLayer.colors = [
-            NSColor(calibratedRed: 0.10, green: 0.04, blue: 0.32, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.25, green: 0.06, blue: 0.54, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.36, green: 0.14, blue: 0.56, alpha: 1).cgColor
+            NSColor(calibratedRed: 0.07, green: 0.04, blue: 0.22, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.18, green: 0.08, blue: 0.45, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.18, green: 0.30, blue: 0.66, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.55, green: 0.22, blue: 0.78, alpha: 1).cgColor
         ]
         gradientLayer.startPoint = CGPoint(x: 0, y: 0)
         gradientLayer.endPoint = CGPoint(x: 1, y: 1)
@@ -1194,10 +1195,12 @@ final class GlassCardView: NSView {
 
 enum StudioUI {
     static let white = NSColor.white
-    static let muted = NSColor.white.withAlphaComponent(0.72)
-    static let cyan = NSColor(calibratedRed: 0.43, green: 0.89, blue: 1.0, alpha: 1)
-    static let lime = NSColor(calibratedRed: 0.77, green: 1.0, blue: 0.36, alpha: 1)
-    static let warning = NSColor(calibratedRed: 1.0, green: 0.79, blue: 0.09, alpha: 1)
+    static let ink = NSColor(calibratedRed: 0.08, green: 0.06, blue: 0.18, alpha: 1)
+    static let muted = NSColor.white.withAlphaComponent(0.74)
+    static let cyan = NSColor(calibratedRed: 0.50, green: 0.92, blue: 1.0, alpha: 1)
+    static let lime = NSColor(calibratedRed: 0.78, green: 1.0, blue: 0.40, alpha: 1)
+    static let warning = NSColor(calibratedRed: 1.0, green: 0.78, blue: 0.16, alpha: 1)
+    static let coral = NSColor(calibratedRed: 1.0, green: 0.42, blue: 0.52, alpha: 1)
 
     static func label(_ text: String, size: CGFloat, weight: NSFont.Weight = .regular, color: NSColor = white) -> NSTextField {
         let field = NSTextField(labelWithString: text)
@@ -1230,13 +1233,13 @@ enum StudioUI {
 
 final class ToolbarDashboardView: GradientPanelView {
     init(model: ToolbarDashboardModel) {
-        super.init(cornerRadius: 24, borderAlpha: 0.24)
-        frame = NSRect(x: 0, y: 0, width: 386, height: 278)
+        super.init(cornerRadius: 30, borderAlpha: 0.28)
+        frame = NSRect(x: 0, y: 0, width: 414, height: 292)
 
         let root = NSStackView()
         root.orientation = .vertical
-        root.spacing = 14
-        root.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        root.spacing = 16
+        root.edgeInsets = NSEdgeInsets(top: 22, left: 22, bottom: 22, right: 22)
         root.translatesAutoresizingMaskIntoConstraints = false
         addSubview(root)
 
@@ -1255,15 +1258,15 @@ final class ToolbarDashboardView: GradientPanelView {
         let titleStack = NSStackView()
         titleStack.orientation = .vertical
         titleStack.spacing = 4
-        titleStack.addArrangedSubview(StudioUI.label(model.title, size: 24, weight: .bold))
-        titleStack.addArrangedSubview(StudioUI.label(model.email, size: 13, color: StudioUI.muted))
+        titleStack.addArrangedSubview(StudioUI.label(model.title, size: 27, weight: .bold))
+        titleStack.addArrangedSubview(StudioUI.label(model.email, size: 13.5, color: StudioUI.muted))
         header.addArrangedSubview(titleStack)
 
         let spacer = NSView()
         header.addArrangedSubview(spacer)
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let iconCard = GlassCardView(cornerRadius: 18)
+        let iconCard = GlassCardView(cornerRadius: 20)
         iconCard.translatesAutoresizingMaskIntoConstraints = false
         let iconView = NSImageView(image: model.icon ?? NSImage())
         iconView.imageScaling = .scaleProportionallyUpOrDown
@@ -1281,14 +1284,10 @@ final class ToolbarDashboardView: GradientPanelView {
         root.addArrangedSubview(header)
 
         let metricGrid = NSGridView(views: [
-            [
-                metricCard(symbol: "timer", title: "5hr", value: model.fiveHourPercent, detail: model.fiveHourReset, color: StudioUI.cyan),
-                metricCard(symbol: "calendar", title: "Weekly", value: model.weeklyPercent, detail: model.weeklyReset, color: StudioUI.lime)
-            ],
-            [
-                metricCard(symbol: "person.2", title: "Accounts", value: model.accountCount, detail: "saved", color: StudioUI.warning),
-                metricCard(symbol: "checkmark.shield", title: "Status", value: model.status, detail: "active", color: StudioUI.cyan)
-            ]
+            [metricCard(symbol: "timer", title: "5hr", value: model.fiveHourPercent, detail: model.fiveHourReset, color: StudioUI.cyan),
+             metricCard(symbol: "calendar", title: "Weekly", value: model.weeklyPercent, detail: model.weeklyReset, color: StudioUI.lime)],
+            [metricCard(symbol: "person.2.fill", title: "Accounts", value: model.accountCount, detail: "saved", color: StudioUI.warning),
+             metricCard(symbol: "sparkles", title: "Plan", value: model.status, detail: "active", color: StudioUI.coral)]
         ])
         metricGrid.rowSpacing = 12
         metricGrid.columnSpacing = 12
@@ -1303,7 +1302,7 @@ final class ToolbarDashboardView: GradientPanelView {
         let card = GlassCardView(cornerRadius: 14)
         let stack = NSStackView()
         stack.orientation = .vertical
-        stack.spacing = 5
+        stack.spacing = 6
         stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
         stack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(stack)
@@ -1315,7 +1314,7 @@ final class ToolbarDashboardView: GradientPanelView {
         top.addArrangedSubview(StudioUI.symbol(symbol, size: 18, color: color))
         top.addArrangedSubview(StudioUI.label(title, size: 13, weight: .semibold, color: StudioUI.muted))
         stack.addArrangedSubview(top)
-        stack.addArrangedSubview(StudioUI.label(value, size: 19, weight: .bold, color: .white))
+        stack.addArrangedSubview(StudioUI.label(value, size: 20, weight: .bold, color: .white))
         stack.addArrangedSubview(StudioUI.label(detail.isEmpty ? " " : detail, size: 12, color: StudioUI.muted))
 
         NSLayoutConstraint.activate([
@@ -1323,7 +1322,7 @@ final class ToolbarDashboardView: GradientPanelView {
             stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
             stack.topAnchor.constraint(equalTo: card.topAnchor),
             stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-            card.widthAnchor.constraint(equalToConstant: 167),
+            card.widthAnchor.constraint(equalToConstant: 179),
             card.heightAnchor.constraint(equalToConstant: 82)
         ])
         return card
@@ -1341,6 +1340,15 @@ struct ManagedAppClone: Codable, Equatable {
     var createdAt: Date
     var lastLaunchAt: Date?
     var lastPID: Int32?
+    var lastHealthStatus: String?
+    var lastHealthDetails: String?
+    var lastHealthCheckedAt: Date?
+}
+
+struct CloneIdentityPlan {
+    let bundleIdentifier: String
+    let replacements: [(String, String)]
+    let shouldPreserveEntitlements: Bool
 }
 
 final class InstanceManagerStore {
@@ -1452,7 +1460,8 @@ final class AppCloneManager {
 
         let info = try readInfoPlist(in: sourceURL)
         let sourceName = sourceURL.deletingPathExtension().lastPathComponent
-        let baseBundleID = sanitizedBundleID(info["CFBundleIdentifier"] as? String ?? "local.\(sourceName)")
+        let sourceBundleID = info["CFBundleIdentifier"] as? String
+        let baseBundleID = sanitizedBundleID(sourceBundleID ?? "local.\(sourceName)")
         let existing = store.loadClones()
         let retained = existing.filter { $0.sourceAppPath != sourceURL.path }
         let oldForSource = existing.filter { $0.sourceAppPath == sourceURL.path }
@@ -1473,7 +1482,12 @@ final class AppCloneManager {
             let displayName = "\(safeDisplayName(baseDisplayName?.isEmpty == false ? baseDisplayName! : sourceName)) \(number)"
             let cloneURL = store.cloneRoot.appendingPathComponent("\(displayName).app")
             let dataURL = store.dataRoot.appendingPathComponent("\(safeFolderName(displayName))")
-            let bundleID = "\(baseBundleID).managedclone.\(number)"
+            let identityPlan = cloneIdentityPlan(
+                sourceBundleIdentifier: sourceBundleID,
+                fallbackBundleIdentifier: "\(baseBundleID).managedclone.\(number)",
+                cloneIndex: index
+            )
+            let bundleID = identityPlan.bundleIdentifier
 
             if fileManager.fileExists(atPath: cloneURL.path) {
                 try fileManager.removeItem(at: cloneURL)
@@ -1482,8 +1496,12 @@ final class AppCloneManager {
             try prepareDataFolders(at: dataURL)
             let iconFileName = try installCustomIcon(iconURL, in: cloneURL)
             try rewriteInfoPlist(in: cloneURL, displayName: displayName, bundleIdentifier: bundleID, iconFileName: iconFileName)
-            try patchKnownSharedContainerIdentifiers(in: cloneURL, sourceBundleIdentifier: info["CFBundleIdentifier"] as? String, cloneIndex: index)
-            try signAppIfPossible(cloneURL)
+            try patchKnownSharedContainerIdentifiers(in: cloneURL, replacements: identityPlan.replacements)
+            let entitlementsURL = identityPlan.shouldPreserveEntitlements
+                ? try patchedEntitlementsURL(for: sourceURL, replacements: identityPlan.replacements, bundleIdentifier: bundleID)
+                : nil
+            try signAppIfPossible(cloneURL, entitlementsURL: entitlementsURL)
+            removeExtendedAttributes(from: cloneURL)
             registerWithLaunchServices(cloneURL)
 
             clones.append(ManagedAppClone(
@@ -1496,7 +1514,10 @@ final class AppCloneManager {
                 bundleIdentifier: bundleID,
                 createdAt: Date(),
                 lastLaunchAt: nil,
-                lastPID: nil
+                lastPID: nil,
+                lastHealthStatus: nil,
+                lastHealthDetails: nil,
+                lastHealthCheckedAt: nil
             ))
         }
 
@@ -1507,19 +1528,61 @@ final class AppCloneManager {
 
     func launch(_ clone: ManagedAppClone) throws -> ManagedAppClone {
         let cloneURL = URL(fileURLWithPath: clone.cloneAppPath)
-        let executableURL = try executableURL(for: cloneURL)
         try prepareDataFolders(at: URL(fileURLWithPath: clone.dataPath))
 
-        let process = Process()
-        process.executableURL = executableURL
-        process.currentDirectoryURL = cloneURL.deletingLastPathComponent()
-        process.arguments = launchArguments(for: clone, appURL: cloneURL)
-        process.environment = launchEnvironment(for: clone, appURL: cloneURL)
-        try process.run()
+        let pid: Int32
+        if shouldUseElectronUserDataArgument(for: cloneURL) {
+            let executableURL = try executableURL(for: cloneURL)
+            let process = Process()
+            process.executableURL = executableURL
+            process.currentDirectoryURL = cloneURL.deletingLastPathComponent()
+            process.arguments = launchArguments(for: clone, appURL: cloneURL)
+            process.environment = launchEnvironment(for: clone, appURL: cloneURL)
+            try process.run()
+            pid = process.processIdentifier
+        } else {
+            do {
+                pid = try launchNativeBundle(clone)
+            } catch {
+                pid = try launchDirectNativeExecutable(clone, appURL: cloneURL, launchServicesError: error)
+            }
+        }
 
         var updated = clone
         updated.lastLaunchAt = Date()
-        updated.lastPID = process.processIdentifier
+        updated.lastPID = pid
+        replaceStoredClone(updated)
+        return updated
+    }
+
+    func healthCheck(_ clone: ManagedAppClone) -> ManagedAppClone {
+        var updated = clone
+        let running = isCloneProcessRunning(clone)
+        let issues = recentIssueLog(for: clone)
+        if !issues.isEmpty {
+            if issues.localizedCaseInsensitiveContains("shared container URL is nil") {
+                updated.lastHealthStatus = "App-group issue"
+            } else if issues.localizedCaseInsensitiveContains("database is locked") {
+                updated.lastHealthStatus = "Data lock issue"
+            } else if issues.localizedCaseInsensitiveContains("Code has restricted entitlements")
+                || issues.localizedCaseInsensitiveContains("code signature validation failed")
+                || issues.localizedCaseInsensitiveContains("AMFI") {
+                updated.lastHealthStatus = "Signing blocked"
+            } else {
+                updated.lastHealthStatus = running ? "Issues found" : "Exited with issues"
+            }
+            updated.lastHealthDetails = issues
+        } else if running {
+            updated.lastHealthStatus = "Running clean"
+            updated.lastHealthDetails = "No restart, app-group, signing, dyld, or data-lock messages found in recent logs."
+        } else if clone.lastLaunchAt != nil {
+            updated.lastHealthStatus = "Not running"
+            updated.lastHealthDetails = "The clone is not currently running. Launch it again to collect fresh live diagnostics."
+        } else {
+            updated.lastHealthStatus = "Ready"
+            updated.lastHealthDetails = "Launch the clone to start health monitoring."
+        }
+        updated.lastHealthCheckedAt = Date()
         replaceStoredClone(updated)
         return updated
     }
@@ -1559,6 +1622,51 @@ final class AppCloneManager {
         let escapedPath = NSRegularExpression.escapedPattern(for: clone.cloneAppPath)
         let result = runSync("/usr/bin/pgrep", ["-f", escapedPath])
         return result.status == 0
+    }
+
+    private func launchNativeBundle(_ clone: ManagedAppClone) throws -> Int32 {
+        let result = runSync("/usr/bin/open", ["-n", clone.cloneAppPath])
+        if result.status != 0 {
+            throw AppCloneError.commandFailed(result.output)
+        }
+
+        for _ in 0..<30 {
+            if let pid = runningPID(for: clone) {
+                return pid
+            }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+
+        throw AppCloneError.commandFailed("\(clone.displayName) did not stay running after LaunchServices opened it.")
+    }
+
+    private func launchDirectNativeExecutable(_ clone: ManagedAppClone, appURL: URL, launchServicesError: Error) throws -> Int32 {
+        let executableURL = try executableURL(for: appURL)
+        let process = Process()
+        process.executableURL = executableURL
+        process.currentDirectoryURL = appURL.deletingLastPathComponent()
+        process.environment = launchEnvironment(for: clone, appURL: appURL)
+        do {
+            try process.run()
+            Thread.sleep(forTimeInterval: 0.6)
+            if kill(process.processIdentifier, 0) == 0 {
+                return process.processIdentifier
+            }
+        } catch {
+            throw AppCloneError.commandFailed("LaunchServices failed: \(launchServicesError.localizedDescription)\nDirect executable launch failed: \(error.localizedDescription)")
+        }
+
+        throw AppCloneError.commandFailed("LaunchServices failed: \(launchServicesError.localizedDescription)\nDirect executable launch exited immediately.")
+    }
+
+    private func runningPID(for clone: ManagedAppClone) -> Int32? {
+        let escapedPath = NSRegularExpression.escapedPattern(for: clone.cloneAppPath)
+        let result = runSync("/usr/bin/pgrep", ["-f", escapedPath])
+        guard result.status == 0 else { return nil }
+        return result.output
+            .split(whereSeparator: \.isNewline)
+            .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .first
     }
 
     private func launchArguments(for clone: ManagedAppClone, appURL: URL) -> [String] {
@@ -1618,35 +1726,49 @@ final class AppCloneManager {
         return lowerName.contains("codex") || lowerName.contains("electron")
     }
 
-    private func patchKnownSharedContainerIdentifiers(in appURL: URL, sourceBundleIdentifier: String?, cloneIndex: Int) throws {
+    private func cloneIdentityPlan(sourceBundleIdentifier: String?, fallbackBundleIdentifier: String, cloneIndex: Int) -> CloneIdentityPlan {
         let suffix = String(format: "%02d", cloneIndex)
-        var replacements: [(String, String)] = []
 
         switch sourceBundleIdentifier {
         case "ru.keepcoder.Telegram":
-            replacements = [
-                ("6N38VWS5BX.ru.keepcoder.Telegram.TelegramShare", "6N38VWS5BX.ru.keepcoder.Telegr\(suffix).TelegramShare"),
-                ("6N38VWS5BX.ru.keepcoder.Telegram.FocusIntents", "6N38VWS5BX.ru.keepcoder.Telegr\(suffix).FocusIntents"),
-                ("6N38VWS5BX.ru.keepcoder.Telegram", "6N38VWS5BX.ru.keepcoder.Telegr\(suffix)"),
-                ("ru.keepcoder.Telegram.TelegramShare", "ru.keepcoder.Telegr\(suffix).TelegramShare"),
-                ("ru.keepcoder.Telegram", "ru.keepcoder.Telegr\(suffix)")
-            ]
+            return CloneIdentityPlan(
+                bundleIdentifier: "ru.keepcoder.Telegr\(suffix)",
+                replacements: [
+                    ("6N38VWS5BX.ru.keepcoder.Telegram.TelegramShare", "6N38VWS5BX.ru.keepcoder.Telegr\(suffix).TelegramShare"),
+                    ("6N38VWS5BX.ru.keepcoder.Telegram.FocusIntents", "6N38VWS5BX.ru.keepcoder.Telegr\(suffix).FocusIntents"),
+                    ("6N38VWS5BX.ru.keepcoder.Telegram", "6N38VWS5BX.ru.keepcoder.Telegr\(suffix)"),
+                    ("ru.keepcoder.Telegram.TelegramShare", "ru.keepcoder.Telegr\(suffix).TelegramShare"),
+                    ("ru.keepcoder.Telegram", "ru.keepcoder.Telegr\(suffix)")
+                ],
+                shouldPreserveEntitlements: true
+            )
         case "net.whatsapp.WhatsApp":
-            replacements = [
-                ("group.net.whatsapp.WhatsAppSMB.shared", "group.net.whatsapp.WhatsAppSMB.shar\(suffix)"),
-                ("group.net.whatsapp.WhatsApp.private", "group.net.whatsapp.WhatsApp.priva\(suffix)"),
-                ("group.net.whatsapp.WhatsApp.shared", "group.net.whatsapp.WhatsApp.shar\(suffix)"),
-                ("group.net.whatsapp.family", "group.net.whatsapp.fami\(suffix)"),
-                ("group.com.facebook.family", "group.com.facebook.fami\(suffix)"),
-                ("UKFA9XBX6K.net.whatsapp.WhatsApp", "UKFA9XBX6K.net.whatsapp.WhatsA\(suffix)"),
-                ("57T9237FN3.net.whatsapp.WhatsApp", "57T9237FN3.net.whatsapp.WhatsA\(suffix)"),
-                ("iCloud.net.whatsapp.WhatsApp", "iCloud.net.whatsapp.WhatsA\(suffix)"),
-                ("net.whatsapp.WhatsApp", "net.whatsapp.WhatsA\(suffix)")
-            ]
+            return CloneIdentityPlan(
+                bundleIdentifier: "net.whatsapp.WhatsA\(suffix)",
+                replacements: [
+                    ("group.net.whatsapp.WhatsAppSMB.shared", "group.net.whatsapp.WhatsA\(suffix)SMB.shared"),
+                    ("group.net.whatsapp.WhatsApp.private", "group.net.whatsapp.WhatsA\(suffix).private"),
+                    ("group.net.whatsapp.WhatsApp.shared", "group.net.whatsapp.WhatsA\(suffix).shared"),
+                    ("group.net.whatsapp.family", "group.net.whatsapp.fami\(suffix)"),
+                    ("group.com.facebook.family", "group.com.facebook.fami\(suffix)"),
+                    ("UKFA9XBX6K.net.whatsapp.WhatsApp", "UKFA9XBX6K.net.whatsapp.WhatsA\(suffix)"),
+                    ("57T9237FN3.net.whatsapp.WhatsApp", "57T9237FN3.net.whatsapp.WhatsA\(suffix)"),
+                    ("iCloud.net.whatsapp.WhatsApp", "iCloud.net.whatsapp.WhatsA\(suffix)"),
+                    ("net.whatsapp.WhatsApp", "net.whatsapp.WhatsA\(suffix)")
+                ],
+                shouldPreserveEntitlements: false
+            )
         default:
-            return
+            return CloneIdentityPlan(
+                bundleIdentifier: fallbackBundleIdentifier,
+                replacements: [],
+                shouldPreserveEntitlements: true
+            )
         }
+    }
 
+    private func patchKnownSharedContainerIdentifiers(in appURL: URL, replacements: [(String, String)]) throws {
+        guard !replacements.isEmpty else { return }
         let sortedReplacements = replacements.sorted { $0.0.count > $1.0.count }
         for (original, replacement) in sortedReplacements {
             guard original.utf8.count == replacement.utf8.count else {
@@ -1674,6 +1796,64 @@ final class AppCloneManager {
                 try data.write(to: fileURL, options: .atomic)
             }
         }
+    }
+
+    private func patchedEntitlementsURL(for sourceURL: URL, replacements: [(String, String)], bundleIdentifier: String) throws -> URL? {
+        guard let entitlementData = extractEntitlementsData(from: sourceURL),
+              let object = try? PropertyListSerialization.propertyList(from: entitlementData, options: [], format: nil) else {
+            return nil
+        }
+
+        var normalizedReplacements = replacements
+        if let sourceBundleIdentifier = try? readInfoPlist(in: sourceURL)["CFBundleIdentifier"] as? String,
+           sourceBundleIdentifier != bundleIdentifier {
+            normalizedReplacements.append((sourceBundleIdentifier, bundleIdentifier))
+        }
+
+        let patched = patchPropertyListStrings(object, replacements: normalizedReplacements)
+        let data = try PropertyListSerialization.data(fromPropertyList: patched, format: .xml, options: 0)
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("codex-switcher-\(UUID().uuidString).entitlements")
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+
+    private func extractEntitlementsData(from appURL: URL) -> Data? {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        process.arguments = ["-d", "--entitlements", ":-", appURL.path]
+        process.standardOutput = output
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0, !data.isEmpty else { return nil }
+            return data
+        } catch {
+            return nil
+        }
+    }
+
+    private func patchPropertyListStrings(_ value: Any, replacements: [(String, String)]) -> Any {
+        if let string = value as? String {
+            return replacements.reduce(string) { result, pair in
+                result.replacingOccurrences(of: pair.0, with: pair.1)
+            }
+        }
+        if let array = value as? [Any] {
+            return array.map { patchPropertyListStrings($0, replacements: replacements) }
+        }
+        if let dictionary = value as? [String: Any] {
+            var patched: [String: Any] = [:]
+            for (key, item) in dictionary {
+                patched[key] = patchPropertyListStrings(item, replacements: replacements)
+            }
+            return patched
+        }
+        return value
     }
 
     private func replaceAll(original: [UInt8], replacement: [UInt8], in data: inout Data) -> Bool {
@@ -1727,6 +1907,9 @@ final class AppCloneManager {
             ["home", "Library", "Preferences"],
             ["home", "Library", "Saved Application State"],
             ["home", "Library", "WebKit"],
+            ["home", "Desktop"],
+            ["home", "Documents"],
+            ["home", "Downloads"],
             ["codex-home"],
             ["config"],
             ["cache"],
@@ -1800,18 +1983,55 @@ final class AppCloneManager {
         return executableURL
     }
 
-    private func signAppIfPossible(_ appURL: URL) throws {
+    private func signAppIfPossible(_ appURL: URL, entitlementsURL: URL?) throws {
         guard fileManager.isExecutableFile(atPath: "/usr/bin/codesign") else { return }
-        let result = runSync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", appURL.path])
+        let deepArguments = entitlementsURL == nil
+            ? ["--force", "--deep", "--sign", "-", appURL.path]
+            : ["--force", "--deep", "--sign", "-", "--options", "runtime", appURL.path]
+        let deepResult = runSync("/usr/bin/codesign", deepArguments)
+        if deepResult.status != 0 {
+            throw AppCloneError.commandFailed("Signing \(appURL.lastPathComponent) failed:\n\(deepResult.output)")
+        }
+
+        guard let entitlementsURL else { return }
+        var arguments = ["--force", "--sign", "-", "--options", "runtime"]
+        arguments += ["--entitlements", entitlementsURL.path]
+        arguments.append(appURL.path)
+        let result = runSync("/usr/bin/codesign", arguments)
+        try? fileManager.removeItem(at: entitlementsURL)
         if result.status != 0 {
             throw AppCloneError.commandFailed("Signing \(appURL.lastPathComponent) failed:\n\(result.output)")
         }
+    }
+
+    private func recentIssueLog(for clone: ManagedAppClone) -> String {
+        let appURL = URL(fileURLWithPath: clone.cloneAppPath)
+        let executableName = (try? readInfoPlist(in: appURL)["CFBundleExecutable"] as? String) ?? appURL.deletingPathExtension().lastPathComponent
+        let processPredicate = clone.lastPID.map { "processID == \($0)" } ?? "process == \"\(executableName)\""
+        let predicate = """
+        process != "log" AND (\(processPredicate) OR eventMessage CONTAINS[c] "\(clone.bundleIdentifier)" OR eventMessage CONTAINS[c] "\(appURL.lastPathComponent)") AND (eventMessage CONTAINS[c] "restart before linking" OR eventMessage CONTAINS[c] "shared container URL is nil" OR eventMessage CONTAINS[c] "database is locked" OR eventMessage CONTAINS[c] "Library not loaded" OR eventMessage CONTAINS[c] "Code has restricted entitlements" OR eventMessage CONTAINS[c] "code signature validation failed" OR eventMessage CONTAINS[c] "Launch failed" OR eventMessage CONTAINS[c] "Unsatisfied Entitlements" OR eventMessage CONTAINS[c] "AMFI" OR eventMessage CONTAINS[c] "dyld")
+        """
+        let result = runSync("/usr/bin/log", ["show", "--last", "3m", "--style", "compact", "--predicate", predicate])
+        guard result.status == 0 else {
+            return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let lines = result.output
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .filter { !$0.contains(" log[") && !$0.contains("log show") }
+            .suffix(16)
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func registerWithLaunchServices(_ appURL: URL) {
         let lsregister = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
         guard fileManager.isExecutableFile(atPath: lsregister) else { return }
         _ = runSync(lsregister, ["-f", appURL.path])
+    }
+
+    private func removeExtendedAttributes(from appURL: URL) {
+        guard fileManager.isExecutableFile(atPath: "/usr/bin/xattr") else { return }
+        _ = runSync("/usr/bin/xattr", ["-cr", appURL.path])
     }
 
     private func runSync(_ executable: String, _ arguments: [String]) -> CommandResult {
@@ -1860,6 +2080,7 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
     private let store = InstanceManagerStore.shared
     private lazy var manager = AppCloneManager(store: store)
     private var clones: [ManagedAppClone] = []
+    private var healthTimer: Timer?
     private var selectedIconURL: URL? {
         didSet {
             iconPathField.stringValue = selectedIconURL?.path ?? "Default source app icon"
@@ -1895,10 +2116,15 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         buildInterface()
         sourceURL = store.selectedSourceURL
         reloadClones()
+        startHealthMonitoring()
     }
 
     required init?(coder: NSCoder) {
         nil
+    }
+
+    deinit {
+        healthTimer?.invalidate()
     }
 
     private func buildInterface() {
@@ -1909,8 +2135,8 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
 
         let root = NSStackView()
         root.orientation = .vertical
-        root.spacing = 16
-        root.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
+        root.spacing = 18
+        root.edgeInsets = NSEdgeInsets(top: 26, left: 26, bottom: 24, right: 26)
         root.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(root)
 
@@ -1928,8 +2154,8 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         let titleStack = NSStackView()
         titleStack.orientation = .vertical
         titleStack.spacing = 5
-        titleStack.addArrangedSubview(StudioUI.label("Clone Studio", size: 30, weight: .bold))
-        titleStack.addArrangedSubview(StudioUI.label("Run isolated native and Electron app copies", size: 14, color: StudioUI.muted))
+        titleStack.addArrangedSubview(StudioUI.label("App Clone Studio", size: 34, weight: .bold))
+        titleStack.addArrangedSubview(StudioUI.label("Separate app data, identity, containers, entitlements, and live health logs", size: 14, color: StudioUI.muted))
         header.addArrangedSubview(titleStack)
         let headerSpacer = NSView()
         header.addArrangedSubview(headerSpacer)
@@ -1942,8 +2168,8 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         badgeStack.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
         badgeStack.translatesAutoresizingMaskIntoConstraints = false
         healthBadge.addSubview(badgeStack)
-        badgeStack.addArrangedSubview(StudioUI.symbol("checkmark.seal.fill", size: 20, color: StudioUI.lime))
-        badgeStack.addArrangedSubview(StudioUI.label("Isolation: Ready", size: 14, weight: .semibold, color: StudioUI.lime))
+        badgeStack.addArrangedSubview(StudioUI.symbol("waveform.path.ecg", size: 20, color: StudioUI.lime))
+        badgeStack.addArrangedSubview(StudioUI.label("Health: Live", size: 14, weight: .semibold, color: StudioUI.lime))
         NSLayoutConstraint.activate([
             badgeStack.leadingAnchor.constraint(equalTo: healthBadge.leadingAnchor),
             badgeStack.trailingAnchor.constraint(equalTo: healthBadge.trailingAnchor),
@@ -1953,7 +2179,7 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         header.addArrangedSubview(healthBadge)
         root.addArrangedSubview(header)
 
-        let controlsCard = GlassCardView(cornerRadius: 18)
+        let controlsCard = GlassCardView(cornerRadius: 22)
         let controlsStack = NSStackView()
         controlsStack.orientation = .vertical
         controlsStack.spacing = 12
@@ -1972,12 +2198,12 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         sourceRow.orientation = .horizontal
         sourceRow.alignment = .centerY
         sourceRow.spacing = 10
-        sourceRow.addArrangedSubview(label("Source app"))
+        sourceRow.addArrangedSubview(label("Source"))
         sourcePathField.lineBreakMode = .byTruncatingMiddle
         sourcePathField.textColor = StudioUI.muted
         sourcePathField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         sourceRow.addArrangedSubview(sourcePathField)
-        sourceRow.addArrangedSubview(button("Choose...", #selector(chooseSourceApp)))
+        sourceRow.addArrangedSubview(button("Choose", #selector(chooseSourceApp)))
         sourceRow.addArrangedSubview(button("Use Codex", #selector(useCodexApp)))
         controlsStack.addArrangedSubview(sourceRow)
 
@@ -1985,7 +2211,7 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         customizeRow.orientation = .horizontal
         customizeRow.alignment = .centerY
         customizeRow.spacing = 10
-        customizeRow.addArrangedSubview(label("Clone name"))
+        customizeRow.addArrangedSubview(label("Name"))
         cloneNameField.placeholderString = "Use source app name"
         styleInput(cloneNameField)
         cloneNameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -1995,7 +2221,7 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         iconPathField.textColor = StudioUI.muted
         iconPathField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         customizeRow.addArrangedSubview(iconPathField)
-        customizeRow.addArrangedSubview(button("Choose Icon...", #selector(chooseIcon)))
+        customizeRow.addArrangedSubview(button("Icon", #selector(chooseIcon)))
         customizeRow.addArrangedSubview(button("Clear Icon", #selector(clearIcon)))
         controlsStack.addArrangedSubview(customizeRow)
 
@@ -2018,6 +2244,7 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         actionRow.addArrangedSubview(button("Create/Rebuild", #selector(createClones)))
         actionRow.addArrangedSubview(button("Run Selected", #selector(runSelected)))
         actionRow.addArrangedSubview(button("Run All", #selector(runAll)))
+        actionRow.addArrangedSubview(button("Health Check", #selector(healthCheckSelected)))
         actionRow.addArrangedSubview(button("Reveal", #selector(revealSelected)))
         actionRow.addArrangedSubview(button("Open Data", #selector(openSelectedData)))
         actionRow.addArrangedSubview(button("Remove", #selector(removeSelected)))
@@ -2039,12 +2266,13 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         tableView.allowsMultipleSelection = true
         tableView.delegate = self
         tableView.dataSource = self
-        addColumn("index", "#", 54)
-        addColumn("name", "App Clone", 180)
-        addColumn("bundle", "Bundle ID", 270)
-        addColumn("data", "Data Folder", 300)
-        addColumn("status", "Status", 120)
-        let tableCard = GlassCardView(cornerRadius: 18)
+        addColumn("index", "#", 48)
+        addColumn("name", "Clone", 170)
+        addColumn("bundle", "Identity", 230)
+        addColumn("data", "Data", 270)
+        addColumn("status", "Status", 135)
+        addColumn("health", "Health", 180)
+        let tableCard = GlassCardView(cornerRadius: 22)
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         tableCard.addSubview(scrollView)
         NSLayoutConstraint.activate([
@@ -2054,7 +2282,7 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
             scrollView.bottomAnchor.constraint(equalTo: tableCard.bottomAnchor, constant: -12)
         ])
         root.addArrangedSubview(tableCard)
-        scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
+        scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 286).isActive = true
 
         let logScroll = NSScrollView()
         logScroll.borderType = .noBorder
@@ -2062,12 +2290,12 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         logScroll.hasVerticalScroller = true
         logScroll.documentView = logTextView
         logTextView.isEditable = false
-        logTextView.backgroundColor = NSColor.white.withAlphaComponent(0.08)
+        logTextView.backgroundColor = NSColor.white.withAlphaComponent(0.10)
         logTextView.textColor = StudioUI.muted
         logTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        logTextView.string = "Ready."
+        logTextView.string = "Live health log ready."
         root.addArrangedSubview(logScroll)
-        logScroll.heightAnchor.constraint(equalToConstant: 96).isActive = true
+        logScroll.heightAnchor.constraint(equalToConstant: 128).isActive = true
     }
 
     private func addColumn(_ identifier: String, _ title: String, _ width: CGFloat) {
@@ -2188,6 +2416,15 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         launch(clones)
     }
 
+    @objc private func healthCheckSelected() {
+        let selected = selectedClones()
+        guard !selected.isEmpty else {
+            showError("Select at least one clone to inspect.")
+            return
+        }
+        runHealthChecks(for: selected, reason: "Manual health check")
+    }
+
     @objc private func revealSelected() {
         guard let clone = selectedClones().first else { return }
         manager.reveal(clone)
@@ -2242,6 +2479,41 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
                 } else {
                     self.appendLog("Launched \(launched), failed \(failures.count).\n\(failures.joined(separator: "\n"))")
                 }
+                self.runHealthChecks(for: launchClones, reason: "Post-launch health check")
+            }
+        }
+    }
+
+    private func startHealthMonitoring() {
+        healthTimer?.invalidate()
+        let timer = Timer(timeInterval: 6, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let running = self.clones.filter { clone in
+                if let pid = clone.lastPID, kill(pid, 0) == 0 {
+                    return true
+                }
+                return false
+            }
+            if !running.isEmpty {
+                self.runHealthChecks(for: running, reason: "Live health monitor", silentWhenClean: true)
+            }
+        }
+        RunLoop.current.add(timer, forMode: .common)
+        healthTimer = timer
+    }
+
+    private func runHealthChecks(for checkClones: [ManagedAppClone], reason: String, silentWhenClean: Bool = false) {
+        DispatchQueue.global(qos: .utility).async {
+            let checked = checkClones.map { self.manager.healthCheck($0) }
+            DispatchQueue.main.async {
+                self.reloadClones()
+                for clone in checked {
+                    let status = clone.lastHealthStatus ?? "Unknown"
+                    let details = clone.lastHealthDetails ?? ""
+                    if silentWhenClean && status == "Running clean" { continue }
+                    let trimmed = details.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.appendLog("\(reason): \(clone.displayName) · \(status)\(trimmed.isEmpty ? "" : "\n\(trimmed)")")
+                }
             }
         }
     }
@@ -2293,6 +2565,8 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
             value = clone.dataPath
         case "status":
             value = statusText(for: clone)
+        case "health":
+            value = clone.lastHealthStatus ?? "Not checked"
         default:
             value = ""
         }
@@ -2312,7 +2586,12 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
                 textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
             ])
         }
-        textField.textColor = StudioUI.white.withAlphaComponent(tableColumn.identifier.rawValue == "status" ? 0.86 : 0.96)
+        if tableColumn.identifier.rawValue == "health" {
+            let health = clone.lastHealthStatus ?? ""
+            textField.textColor = health.contains("Issue") || health.contains("Exited") ? StudioUI.coral : StudioUI.lime
+        } else {
+            textField.textColor = StudioUI.white.withAlphaComponent(tableColumn.identifier.rawValue == "status" ? 0.86 : 0.96)
+        }
         textField.font = NSFont.systemFont(ofSize: 12.5, weight: tableColumn.identifier.rawValue == "name" ? .semibold : .regular)
         textField.stringValue = value
         return cell
@@ -2347,16 +2626,20 @@ private func runCloneSmokeTest(arguments: [String]) -> Int32 {
     }
 
     let launch = arguments.contains("--launch")
+    let keepRunning = arguments.contains("--keep-running")
+    let persistent = arguments.contains("--persistent")
     let testID = UUID().uuidString
     let rootURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("CodexAccountSwitcherSmokeTests")
         .appendingPathComponent(testID)
     let defaults = UserDefaults(suiteName: "com.mohamedfuad.codexaccountswitcher.smoketest.\(testID)") ?? .standard
-    let store = InstanceManagerStore(
-        defaults: defaults,
-        cloneRoot: rootURL.appendingPathComponent("Clones"),
-        dataRoot: rootURL.appendingPathComponent("Data")
-    )
+    let store = persistent
+        ? InstanceManagerStore.shared
+        : InstanceManagerStore(
+            defaults: defaults,
+            cloneRoot: rootURL.appendingPathComponent("Clones"),
+            dataRoot: rootURL.appendingPathComponent("Data")
+        )
     let manager = AppCloneManager(store: store)
 
     do {
@@ -2373,18 +2656,20 @@ private func runCloneSmokeTest(arguments: [String]) -> Int32 {
             for clone in clones {
                 let launched = try manager.launch(clone)
                 print("launched=\(launched.displayName) pid=\(launched.lastPID ?? 0)")
-                Thread.sleep(forTimeInterval: 4)
-                if let pid = launched.lastPID {
-                    kill(pid, SIGTERM)
-                    Thread.sleep(forTimeInterval: 1)
-                    if kill(pid, 0) == 0 {
-                        kill(pid, SIGKILL)
+                if !keepRunning {
+                    Thread.sleep(forTimeInterval: 4)
+                    if let pid = launched.lastPID {
+                        kill(pid, SIGTERM)
+                        Thread.sleep(forTimeInterval: 1)
+                        if kill(pid, 0) == 0 {
+                            kill(pid, SIGKILL)
+                        }
                     }
                 }
             }
         }
 
-        print("root=\(rootURL.path)")
+        print("root=\(persistent ? store.cloneRoot.path : rootURL.path)")
         return 0
     } catch {
         fputs("error: \(error.localizedDescription)\n", stderr)

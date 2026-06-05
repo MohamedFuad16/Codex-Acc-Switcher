@@ -69,9 +69,12 @@ With zero external package dependencies, it integrates directly with standard ma
 *   Create 1-12 managed clones with unique bundle identifiers and separate app data roots.
 *   Set a custom clone name prefix and choose a `.png` or `.icns` icon before creating clones.
 *   Launch selected clones or all clones at once.
+*   The redesigned macOS glass-style Clone Studio shows clone identity, data paths, process status, and live health checks in one window.
+*   Use **Health Check** to inspect recent macOS unified logs for the selected clone. Post-launch checks also run automatically, and running clones are monitored every few seconds.
 *   For Codex/Electron-style apps, each clone is launched with isolated `HOME`, `CFFIXED_USER_HOME`, `CODEX_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `TMPDIR`, and `--user-data-dir` values so memory, local settings, cache, and Chromium profile data stay separated.
 *   For native apps such as Telegram and WhatsApp, Electron-only flags are skipped and each process gets its own fixed macOS user home, including per-clone `Library/Preferences`, `Library/Application Support`, `Library/Containers`, and `Library/Group Containers` folders.
 *   Known fixed-container apps such as Telegram and WhatsApp also get per-clone container identifier remapping so logging into or out of one clone does not reuse the original shared app-group account container.
+*   WhatsApp is best-effort on current macOS releases: the app can clone, re-sign, launch, and diagnose WhatsApp, but WhatsApp's phone-linking flow may still require Apple-granted app-group entitlements that ad-hoc local clones cannot fully satisfy. In that case Clone Studio reports **App-group issue** and logs the exact `shared container URL is nil` message.
 *   Reveal clone bundles, open their data folders, or remove clone bundles while optionally preserving their data.
 
 ---
@@ -91,6 +94,8 @@ The Swift menu bar orchestrates token swapping and app lifecycle management secu
 ```
 
 The Instance Manager uses a bundle-clone strategy: each clone gets a rewritten `CFBundleIdentifier`, display name, optional icon, local signing, and Launch Services registration. Runtime isolation is handled by launching the clone process with a dedicated data directory and environment variables. Electron/Chromium apps receive `--user-data-dir`; native apps do not. For Telegram and WhatsApp, known fixed container identifiers are rewritten to per-clone identifiers with equal-length binary patches before signing.
+
+Clone health checks read recent macOS unified logs and surface the relevant failure directly in the app. For example, WhatsApp clones on macOS 26 can launch successfully but still show **App-group issue** if WhatsApp reports `WAAnalyticsExtensionStoreIntegration: shared container URL is nil`; this means the clone is running, but WhatsApp's pairing flow is blocked by app-group entitlement behavior rather than by a missing file or generic crash.
 
 ---
 
