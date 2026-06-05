@@ -68,7 +68,8 @@ With zero external package dependencies, it integrates directly with standard ma
 *   Open **Open Instance Manager** from the menu bar dropdown to clone any `.app` bundle.
 *   Create 1-12 managed clones with unique bundle identifiers and separate app data roots.
 *   Launch selected clones or all clones at once.
-*   For Codex/Electron-style apps, each clone is launched with isolated `HOME`, `CODEX_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `TMPDIR`, and `--user-data-dir` values so memory, local settings, cache, and Chromium profile data stay separated.
+*   For Codex/Electron-style apps, each clone is launched with isolated `HOME`, `CFFIXED_USER_HOME`, `CODEX_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `TMPDIR`, and `--user-data-dir` values so memory, local settings, cache, and Chromium profile data stay separated.
+*   For native apps such as Telegram and WhatsApp, Electron-only flags are skipped and each process gets its own fixed macOS user home, including per-clone `Library/Preferences`, `Library/Application Support`, `Library/Containers`, and `Library/Group Containers` folders.
 *   Reveal clone bundles, open their data folders, or remove clone bundles while optionally preserving their data.
 
 ---
@@ -87,7 +88,7 @@ The Swift menu bar orchestrates token swapping and app lifecycle management secu
        └─► [5] Opens the native Instance Manager for isolated app clones
 ```
 
-The Instance Manager uses a bundle-clone strategy: each clone gets a rewritten `CFBundleIdentifier` and display name, is ad-hoc signed locally, and is registered with Launch Services. Runtime isolation is handled by launching the clone process with a dedicated data directory and environment variables. This works best for apps that respect process environment paths or Electron/Chromium `--user-data-dir`; some apps may still use hardcoded shared locations.
+The Instance Manager uses a bundle-clone strategy: each clone gets a rewritten `CFBundleIdentifier` and display name, is ad-hoc signed locally, and is registered with Launch Services. Runtime isolation is handled by launching the clone process with a dedicated data directory and environment variables. Electron/Chromium apps receive `--user-data-dir`; native apps do not. Apps that hardcode account state outside the macOS home/container APIs, such as a shared Keychain service, may still need vendor-specific handling.
 
 ---
 

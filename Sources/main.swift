@@ -1151,15 +1151,30 @@ final class InstanceManagerStore {
     private let selectedSourceKey = "instanceManagerSelectedSource"
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let defaults: UserDefaults
+    private let cloneRootOverride: URL?
+    private let dataRootOverride: URL?
+
+    init(defaults: UserDefaults = .standard, cloneRoot: URL? = nil, dataRoot: URL? = nil) {
+        self.defaults = defaults
+        self.cloneRootOverride = cloneRoot
+        self.dataRootOverride = dataRoot
+    }
 
     var cloneRoot: URL {
-        URL(fileURLWithPath: NSHomeDirectory())
+        if let cloneRootOverride {
+            return cloneRootOverride
+        }
+        return URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Applications")
             .appendingPathComponent("Codex Account Switcher Clones")
     }
 
     var dataRoot: URL {
-        URL(fileURLWithPath: NSHomeDirectory())
+        if let dataRootOverride {
+            return dataRootOverride
+        }
+        return URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Application Support/Codex Account Switcher/Instances")
     }
 
@@ -1169,18 +1184,18 @@ final class InstanceManagerStore {
 
     var selectedSourceURL: URL? {
         get {
-            guard let path = UserDefaults.standard.string(forKey: selectedSourceKey), !path.isEmpty else {
+            guard let path = defaults.string(forKey: selectedSourceKey), !path.isEmpty else {
                 return FileManager.default.fileExists(atPath: defaultCodexAppURL.path) ? defaultCodexAppURL : nil
             }
             return URL(fileURLWithPath: path)
         }
         set {
-            UserDefaults.standard.set(newValue?.path, forKey: selectedSourceKey)
+            defaults.set(newValue?.path, forKey: selectedSourceKey)
         }
     }
 
     func loadClones() -> [ManagedAppClone] {
-        guard let data = UserDefaults.standard.data(forKey: clonesKey),
+        guard let data = defaults.data(forKey: clonesKey),
               let clones = try? decoder.decode([ManagedAppClone].self, from: data) else {
             return []
         }
@@ -1189,7 +1204,7 @@ final class InstanceManagerStore {
 
     func saveClones(_ clones: [ManagedAppClone]) {
         guard let data = try? encoder.encode(clones.sorted(by: { $0.index < $1.index })) else { return }
-        UserDefaults.standard.set(data, forKey: clonesKey)
+        defaults.set(data, forKey: clonesKey)
     }
 }
 
@@ -1237,6 +1252,11 @@ final class AppCloneManager {
         let existing = store.loadClones()
         let retained = existing.filter { $0.sourceAppPath != sourceURL.path }
         let oldForSource = existing.filter { $0.sourceAppPath == sourceURL.path }
+        let runningOldClones = oldForSource.filter(isCloneProcessRunning)
+        if !runningOldClones.isEmpty {
+            let names = runningOldClones.map(\.displayName).joined(separator: ", ")
+            throw AppCloneError.commandFailed("Quit running clone(s) before rebuilding: \(names)")
+        }
 
         for clone in oldForSource where clone.cloneAppPath.hasPrefix(store.cloneRoot.path) {
             try? fileManager.removeItem(atPath: clone.cloneAppPath)
@@ -1286,8 +1306,8 @@ final class AppCloneManager {
         let process = Process()
         process.executableURL = executableURL
         process.currentDirectoryURL = cloneURL.deletingLastPathComponent()
-        process.arguments = launchArguments(for: clone)
-        process.environment = launchEnvironment(for: clone)
+        process.arguments = launchArguments(for: clone, appURL: cloneURL)
+        process.environment = launchEnvironment(for: clone, appURL: cloneURL)
         try process.run()
 
         var updated = clone
@@ -1328,7 +1348,17 @@ final class AppCloneManager {
         store.saveClones(stored)
     }
 
-    private func launchArguments(for clone: ManagedAppClone) -> [String] {
+    private func isCloneProcessRunning(_ clone: ManagedAppClone) -> Bool {
+        let escapedPath = NSRegularExpression.escapedPattern(for: clone.cloneAppPath)
+        let result = runSync("/usr/bin/pgrep", ["-f", escapedPath])
+        return result.status == 0
+    }
+
+    private func launchArguments(for clone: ManagedAppClone, appURL: URL) -> [String] {
+        guard shouldUseElectronUserDataArgument(for: appURL) else {
+            return []
+        }
+
         let dataURL = URL(fileURLWithPath: clone.dataPath)
         let userDataURL = dataURL.appendingPathComponent("electron-user-data")
         return [
@@ -1337,18 +1367,27 @@ final class AppCloneManager {
         ]
     }
 
-    private func launchEnvironment(for clone: ManagedAppClone) -> [String: String] {
+    private func launchEnvironment(for clone: ManagedAppClone, appURL: URL) -> [String: String] {
         let dataURL = URL(fileURLWithPath: clone.dataPath)
+        let homeURL = dataURL.appendingPathComponent("home")
         var environment = ProcessInfo.processInfo.environment
         environment["CODEX_SWITCHER_INSTANCE_ID"] = clone.id.uuidString
         environment["CODEX_SWITCHER_INSTANCE_NAME"] = clone.displayName
         environment["CODEX_SWITCHER_REAL_HOME"] = NSHomeDirectory()
-        environment["HOME"] = dataURL.appendingPathComponent("home").path
+        environment["HOME"] = homeURL.path
+        environment["CFFIXED_USER_HOME"] = homeURL.path
         environment["CODEX_HOME"] = dataURL.appendingPathComponent("codex-home").path
         environment["XDG_CONFIG_HOME"] = dataURL.appendingPathComponent("config").path
         environment["XDG_CACHE_HOME"] = dataURL.appendingPathComponent("cache").path
         environment["TMPDIR"] = dataURL.appendingPathComponent("tmp").path
         environment["PATH"] = augmentedPath(from: environment["PATH"])
+        environment["NSUserDefaultsSuiteName"] = clone.bundleIdentifier
+        environment["CFNETWORK_CACHE_PATH"] = homeURL.appendingPathComponent("Library/Caches/\(clone.bundleIdentifier)").path
+        environment["WEBKIT_STORAGE_DIR"] = homeURL.appendingPathComponent("Library/WebKit/\(clone.bundleIdentifier)").path
+
+        if shouldUseElectronUserDataArgument(for: appURL) {
+            environment["CHROME_USER_DATA_DIR"] = dataURL.appendingPathComponent("electron-user-data").path
+        }
 
         let bundledNode = "/Applications/Codex.app/Contents/Resources/node"
         if fileManager.isExecutableFile(atPath: bundledNode) {
@@ -1359,6 +1398,17 @@ final class AppCloneManager {
             environment["CODEX_CLI_PATH"] = bundledCodex
         }
         return environment
+    }
+
+    private func shouldUseElectronUserDataArgument(for appURL: URL) -> Bool {
+        let frameworkURL = appURL.appendingPathComponent("Contents/Frameworks/Electron Framework.framework")
+        let asarURL = appURL.appendingPathComponent("Contents/Resources/app.asar")
+        if fileManager.fileExists(atPath: frameworkURL.path) || fileManager.fileExists(atPath: asarURL.path) {
+            return true
+        }
+
+        let lowerName = appURL.deletingPathExtension().lastPathComponent.lowercased()
+        return lowerName.contains("codex") || lowerName.contains("electron")
     }
 
     private func augmentedPath(from currentPath: String?) -> String {
@@ -1390,8 +1440,14 @@ final class AppCloneManager {
             ["home"],
             ["home", "Library"],
             ["home", "Library", "Application Support"],
+            ["home", "Library", "Application Scripts"],
             ["home", "Library", "Caches"],
+            ["home", "Library", "Containers"],
+            ["home", "Library", "Group Containers"],
+            ["home", "Library", "HTTPStorages"],
             ["home", "Library", "Preferences"],
+            ["home", "Library", "Saved Application State"],
+            ["home", "Library", "WebKit"],
             ["codex-home"],
             ["config"],
             ["cache"],
@@ -1839,6 +1895,73 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         }
         return "Ready"
     }
+}
+
+private func runCloneSmokeTest(arguments: [String]) -> Int32 {
+    guard let sourceFlagIndex = arguments.firstIndex(of: "--source"),
+          sourceFlagIndex + 1 < arguments.count else {
+        fputs("usage: CodexAccountSwitcher --clone-smoke-test --source /Applications/App.app [--count 2] [--launch]\n", stderr)
+        return 64
+    }
+
+    let sourceURL = URL(fileURLWithPath: arguments[sourceFlagIndex + 1])
+    let count: Int
+    if let countFlagIndex = arguments.firstIndex(of: "--count"),
+       countFlagIndex + 1 < arguments.count,
+       let parsed = Int(arguments[countFlagIndex + 1]) {
+        count = parsed
+    } else {
+        count = 2
+    }
+
+    let launch = arguments.contains("--launch")
+    let testID = UUID().uuidString
+    let rootURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("CodexAccountSwitcherSmokeTests")
+        .appendingPathComponent(testID)
+    let defaults = UserDefaults(suiteName: "com.mohamedfuad.codexaccountswitcher.smoketest.\(testID)") ?? .standard
+    let store = InstanceManagerStore(
+        defaults: defaults,
+        cloneRoot: rootURL.appendingPathComponent("Clones"),
+        dataRoot: rootURL.appendingPathComponent("Data")
+    )
+    let manager = AppCloneManager(store: store)
+
+    do {
+        let clones = try manager.createClones(sourceAppURL: sourceURL, count: count)
+        print("created=\(clones.count)")
+        for clone in clones {
+            print("clone=\(clone.displayName)")
+            print("bundle=\(clone.bundleIdentifier)")
+            print("app=\(clone.cloneAppPath)")
+            print("data=\(clone.dataPath)")
+        }
+
+        if launch {
+            for clone in clones {
+                let launched = try manager.launch(clone)
+                print("launched=\(launched.displayName) pid=\(launched.lastPID ?? 0)")
+                Thread.sleep(forTimeInterval: 4)
+                if let pid = launched.lastPID {
+                    kill(pid, SIGTERM)
+                    Thread.sleep(forTimeInterval: 1)
+                    if kill(pid, 0) == 0 {
+                        kill(pid, SIGKILL)
+                    }
+                }
+            }
+        }
+
+        print("root=\(rootURL.path)")
+        return 0
+    } catch {
+        fputs("error: \(error.localizedDescription)\n", stderr)
+        return 1
+    }
+}
+
+if CommandLine.arguments.contains("--clone-smoke-test") {
+    exit(runCloneSmokeTest(arguments: CommandLine.arguments))
 }
 
 let app = NSApplication.shared
