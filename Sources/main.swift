@@ -1236,7 +1236,12 @@ final class AppCloneManager {
         self.store = store
     }
 
-    func createClones(sourceAppURL: URL, count: Int) throws -> [ManagedAppClone] {
+    func createClones(
+        sourceAppURL: URL,
+        count: Int,
+        customNamePrefix: String? = nil,
+        iconURL: URL? = nil
+    ) throws -> [ManagedAppClone] {
         let sourceURL = sourceAppURL.standardizedFileURL
         guard sourceURL.pathExtension == "app",
               fileManager.fileExists(atPath: sourceURL.path) else {
@@ -1265,9 +1270,10 @@ final class AppCloneManager {
         var clones: [ManagedAppClone] = []
         for index in 1...max(1, min(12, count)) {
             let number = String(format: "%02d", index)
-            let displayName = "\(sourceName) \(number)"
+            let baseDisplayName = customNamePrefix?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayName = "\(safeDisplayName(baseDisplayName?.isEmpty == false ? baseDisplayName! : sourceName)) \(number)"
             let cloneURL = store.cloneRoot.appendingPathComponent("\(displayName).app")
-            let dataURL = store.dataRoot.appendingPathComponent("\(safeFolderName(sourceName))-\(number)")
+            let dataURL = store.dataRoot.appendingPathComponent("\(safeFolderName(displayName))")
             let bundleID = "\(baseBundleID).managedclone.\(number)"
 
             if fileManager.fileExists(atPath: cloneURL.path) {
@@ -1275,7 +1281,9 @@ final class AppCloneManager {
             }
             try fileManager.copyItem(at: sourceURL, to: cloneURL)
             try prepareDataFolders(at: dataURL)
-            try rewriteInfoPlist(in: cloneURL, displayName: displayName, bundleIdentifier: bundleID)
+            let iconFileName = try installCustomIcon(iconURL, in: cloneURL)
+            try rewriteInfoPlist(in: cloneURL, displayName: displayName, bundleIdentifier: bundleID, iconFileName: iconFileName)
+            try patchKnownSharedContainerIdentifiers(in: cloneURL, sourceBundleIdentifier: info["CFBundleIdentifier"] as? String, cloneIndex: index)
             try signAppIfPossible(cloneURL)
             registerWithLaunchServices(cloneURL)
 
@@ -1411,6 +1419,78 @@ final class AppCloneManager {
         return lowerName.contains("codex") || lowerName.contains("electron")
     }
 
+    private func patchKnownSharedContainerIdentifiers(in appURL: URL, sourceBundleIdentifier: String?, cloneIndex: Int) throws {
+        let suffix = String(format: "%02d", cloneIndex)
+        var replacements: [(String, String)] = []
+
+        switch sourceBundleIdentifier {
+        case "ru.keepcoder.Telegram":
+            replacements = [
+                ("6N38VWS5BX.ru.keepcoder.Telegram.TelegramShare", "6N38VWS5BX.ru.keepcoder.Telegr\(suffix).TelegramShare"),
+                ("6N38VWS5BX.ru.keepcoder.Telegram.FocusIntents", "6N38VWS5BX.ru.keepcoder.Telegr\(suffix).FocusIntents"),
+                ("6N38VWS5BX.ru.keepcoder.Telegram", "6N38VWS5BX.ru.keepcoder.Telegr\(suffix)"),
+                ("ru.keepcoder.Telegram.TelegramShare", "ru.keepcoder.Telegr\(suffix).TelegramShare"),
+                ("ru.keepcoder.Telegram", "ru.keepcoder.Telegr\(suffix)")
+            ]
+        case "net.whatsapp.WhatsApp":
+            replacements = [
+                ("group.net.whatsapp.WhatsAppSMB.shared", "group.net.whatsapp.WhatsAppSMB.shar\(suffix)"),
+                ("group.net.whatsapp.WhatsApp.private", "group.net.whatsapp.WhatsApp.priva\(suffix)"),
+                ("group.net.whatsapp.WhatsApp.shared", "group.net.whatsapp.WhatsApp.shar\(suffix)"),
+                ("group.net.whatsapp.family", "group.net.whatsapp.fami\(suffix)"),
+                ("group.com.facebook.family", "group.com.facebook.fami\(suffix)"),
+                ("UKFA9XBX6K.net.whatsapp.WhatsApp", "UKFA9XBX6K.net.whatsapp.WhatsA\(suffix)"),
+                ("57T9237FN3.net.whatsapp.WhatsApp", "57T9237FN3.net.whatsapp.WhatsA\(suffix)"),
+                ("iCloud.net.whatsapp.WhatsApp", "iCloud.net.whatsapp.WhatsA\(suffix)"),
+                ("net.whatsapp.WhatsApp", "net.whatsapp.WhatsA\(suffix)")
+            ]
+        default:
+            return
+        }
+
+        let sortedReplacements = replacements.sorted { $0.0.count > $1.0.count }
+        for (original, replacement) in sortedReplacements {
+            guard original.utf8.count == replacement.utf8.count else {
+                throw AppCloneError.commandFailed("Internal replacement length mismatch for \(original).")
+            }
+        }
+
+        guard let enumerator = fileManager.enumerator(
+            at: appURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        for case let fileURL as URL in enumerator {
+            let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true, (values.fileSize ?? 0) <= 512 * 1024 * 1024 else { continue }
+            var data = try Data(contentsOf: fileURL)
+            var changed = false
+            for (original, replacement) in sortedReplacements {
+                changed = replaceAll(original: Array(original.utf8), replacement: Array(replacement.utf8), in: &data) || changed
+            }
+            if changed {
+                try data.write(to: fileURL, options: .atomic)
+            }
+        }
+    }
+
+    private func replaceAll(original: [UInt8], replacement: [UInt8], in data: inout Data) -> Bool {
+        guard original.count == replacement.count, !original.isEmpty else { return false }
+        let originalData = Data(original)
+        let replacementData = Data(replacement)
+        var changed = false
+        var searchRange = data.startIndex..<data.endIndex
+        while let range = data.range(of: originalData, options: [], in: searchRange) {
+            data.replaceSubrange(range, with: replacementData)
+            changed = true
+            searchRange = range.upperBound..<data.endIndex
+        }
+        return changed
+    }
+
     private func augmentedPath(from currentPath: String?) -> String {
         let realHome = NSHomeDirectory()
         let candidates = [
@@ -1476,12 +1556,34 @@ final class AppCloneManager {
         return plist
     }
 
-    private func rewriteInfoPlist(in appURL: URL, displayName: String, bundleIdentifier: String) throws {
+    private func installCustomIcon(_ iconURL: URL?, in appURL: URL) throws -> String? {
+        guard let iconURL else { return nil }
+        let ext = iconURL.pathExtension.lowercased()
+        guard ["png", "icns"].contains(ext) else {
+            throw AppCloneError.commandFailed("Choose a .png or .icns icon file.")
+        }
+        let resourcesURL = appURL.appendingPathComponent("Contents/Resources")
+        try fileManager.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
+        let fileName = "CloneIcon.\(ext)"
+        let targetURL = resourcesURL.appendingPathComponent(fileName)
+        if fileManager.fileExists(atPath: targetURL.path) {
+            try fileManager.removeItem(at: targetURL)
+        }
+        try fileManager.copyItem(at: iconURL, to: targetURL)
+        return fileName
+    }
+
+    private func rewriteInfoPlist(in appURL: URL, displayName: String, bundleIdentifier: String, iconFileName: String?) throws {
         let plistURL = appURL.appendingPathComponent("Contents/Info.plist")
         var plist = try readInfoPlist(in: appURL)
         plist["CFBundleIdentifier"] = bundleIdentifier
         plist["CFBundleName"] = displayName
         plist["CFBundleDisplayName"] = displayName
+        if let iconFileName {
+            plist["CFBundleIconFile"] = iconFileName
+            plist["CFBundleIconName"] = nil
+            plist["CFBundleIcons"] = nil
+        }
         plist["LSMultipleInstancesProhibited"] = false
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         try data.write(to: plistURL, options: .atomic)
@@ -1547,12 +1649,23 @@ final class AppCloneManager {
         let cleaned = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
         return String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private func safeDisplayName(_ value: String) -> String {
+        let forbidden = CharacterSet(charactersIn: "/:")
+        let cleaned = value.unicodeScalars.map { forbidden.contains($0) ? Character("-") : Character($0) }
+        return String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 final class InstanceManagerWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
     private let store = InstanceManagerStore.shared
     private lazy var manager = AppCloneManager(store: store)
     private var clones: [ManagedAppClone] = []
+    private var selectedIconURL: URL? {
+        didSet {
+            iconPathField.stringValue = selectedIconURL?.path ?? "Default source app icon"
+        }
+    }
     private var sourceURL: URL? {
         didSet {
             store.selectedSourceURL = sourceURL
@@ -1561,6 +1674,8 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
     }
 
     private let sourcePathField = NSTextField(labelWithString: "")
+    private let cloneNameField = NSTextField(string: "")
+    private let iconPathField = NSTextField(labelWithString: "Default source app icon")
     private let cloneCountField = NSTextField(string: "6")
     private let cloneCountStepper = NSStepper()
     private let tableView = NSTableView()
@@ -1615,6 +1730,22 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         sourceRow.addArrangedSubview(button("Choose...", #selector(chooseSourceApp)))
         sourceRow.addArrangedSubview(button("Use Codex", #selector(useCodexApp)))
         root.addArrangedSubview(sourceRow)
+
+        let customizeRow = NSStackView()
+        customizeRow.orientation = .horizontal
+        customizeRow.alignment = .centerY
+        customizeRow.spacing = 10
+        customizeRow.addArrangedSubview(label("Clone name"))
+        cloneNameField.placeholderString = "Use source app name"
+        cloneNameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        customizeRow.addArrangedSubview(cloneNameField)
+        customizeRow.addArrangedSubview(label("Icon"))
+        iconPathField.lineBreakMode = .byTruncatingMiddle
+        iconPathField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        customizeRow.addArrangedSubview(iconPathField)
+        customizeRow.addArrangedSubview(button("Choose Icon...", #selector(chooseIcon)))
+        customizeRow.addArrangedSubview(button("Clear Icon", #selector(clearIcon)))
+        root.addArrangedSubview(customizeRow)
 
         let actionRow = NSStackView()
         actionRow.orientation = .horizontal
@@ -1716,17 +1847,44 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         sourceURL = store.defaultCodexAppURL
     }
 
+    @objc private func chooseIcon() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose clone icon"
+        var types: [UTType] = [.png]
+        if let icns = UTType(filenameExtension: "icns") {
+            types.append(icns)
+        }
+        panel.allowedContentTypes = types
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK {
+            selectedIconURL = panel.url
+        }
+    }
+
+    @objc private func clearIcon() {
+        selectedIconURL = nil
+    }
+
     @objc private func createClones() {
         guard let sourceURL else {
             showError("Choose an app bundle first.")
             return
         }
         let count = max(1, min(12, Int(cloneCountField.stringValue) ?? cloneCountStepper.integerValue))
+        let customNamePrefix = cloneNameField.stringValue
+        let iconURL = selectedIconURL
         setBusy(true)
         appendLog("Creating \(count) clone(s) from \(sourceURL.lastPathComponent)...")
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let newClones = try self.manager.createClones(sourceAppURL: sourceURL, count: count)
+                let newClones = try self.manager.createClones(
+                    sourceAppURL: sourceURL,
+                    count: count,
+                    customNamePrefix: customNamePrefix,
+                    iconURL: iconURL
+                )
                 DispatchQueue.main.async {
                     self.setBusy(false)
                     self.reloadClones()
