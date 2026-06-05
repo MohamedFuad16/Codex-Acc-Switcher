@@ -42,7 +42,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var switchAnimationTimer: Timer?
     private var switchAnimationFrame = 0
     private var switchingTitle = "Switching"
-    private var instanceManagerWindowController: InstanceManagerWindowController?
     private let switchAnimationFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     private let statusPulseFrames = ["·", "•", "·", " "]
     private var notifiedLowUsageKeys = Set<String>()
@@ -163,9 +162,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
 
-        menu.addItem(dashboardMenuItem())
-        menu.addItem(.separator())
-
         if accounts.isEmpty {
             let item = NSMenuItem(title: lastError ?? "No accounts available", action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -183,12 +179,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 menu.addItem(item)
             }
         }
-
-        menu.addItem(.separator())
-
-        let instanceManager = NSMenuItem(title: "Open Instance Manager", action: #selector(openInstanceManager), keyEquivalent: "i")
-        instanceManager.target = self
-        menu.addItem(instanceManager)
 
         menu.addItem(.separator())
 
@@ -268,24 +258,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.addItem(quit)
 
         statusItem.menu = menu
-    }
-
-    private func dashboardMenuItem() -> NSMenuItem {
-        let active = accounts.first(where: { $0.isActive })
-        let model = ToolbarDashboardModel(
-            title: active.map { "Codex: \(displayLabel(for: $0))" } ?? "Codex",
-            status: active.map { "\(displayPlan($0.plan)) account" } ?? "No active account",
-            email: active?.email ?? (lastError ?? "Add or refresh accounts"),
-            fiveHourPercent: active.map { remainingPercentText(fromUsed: $0.fiveHourUsedPercent) } ?? "--%",
-            fiveHourReset: active.map { resetTimeText(from: $0.fiveHourUsage) } ?? "",
-            weeklyPercent: active.map { remainingPercentText(fromUsed: $0.weeklyUsedPercent) } ?? "--%",
-            weeklyReset: active.map { resetDateText(from: $0.weeklyUsage) } ?? "",
-            accountCount: "\(accounts.count)",
-            icon: loadCodexIcon()
-        )
-        let item = NSMenuItem()
-        item.view = ToolbarDashboardView(model: model)
-        return item
     }
 
     private func advanceStatusAnimation() {
@@ -426,14 +398,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func refreshNow() {
         refreshAccounts()
-    }
-
-    @objc private func openInstanceManager() {
-        if instanceManagerWindowController == nil {
-            instanceManagerWindowController = InstanceManagerWindowController()
-        }
-        instanceManagerWindowController?.showWindow(self)
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func setFiveHourMode() {
@@ -864,14 +828,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return CommandResult(status: 1, output: "Codex processes survived force quit: \(remaining.joined(separator: ", "))")
         }
 
-        transcript.append("Opening Codex App through codex-auth...")
-        let appResult = runCodexAuth(["app", "--platform", "mac"])
-        if appResult.status != 0 {
-            transcript.append("codex-auth app failed; falling back to open -a Codex.")
-            let openResult = run("/usr/bin/open", ["-a", "Codex"])
-            if openResult.status != 0 {
-                return CommandResult(status: openResult.status, output: transcript.joined(separator: "\n") + "\n" + openResult.output)
-            }
+        transcript.append("Opening Codex App...")
+        let openResult = run("/usr/bin/open", ["-a", "Codex"])
+        if openResult.status != 0 {
+            return CommandResult(status: openResult.status, output: transcript.joined(separator: "\n") + "\n" + openResult.output)
         }
 
         Thread.sleep(forTimeInterval: 4)
@@ -1152,16 +1112,14 @@ class GradientPanelView: NSView {
         layer?.cornerRadius = cornerRadius
         layer?.masksToBounds = true
         layer?.borderWidth = 1
-        layer?.borderColor = NSColor.white.withAlphaComponent(borderAlpha).cgColor
+        layer?.borderColor = NSColor.black.withAlphaComponent(borderAlpha).cgColor
         gradientLayer.colors = [
-            NSColor(calibratedRed: 0.07, green: 0.04, blue: 0.22, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.18, green: 0.08, blue: 0.45, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.18, green: 0.30, blue: 0.66, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.55, green: 0.22, blue: 0.78, alpha: 1).cgColor
+            NSColor(calibratedWhite: 0.99, alpha: 1).cgColor,
+            NSColor(calibratedWhite: 0.95, alpha: 1).cgColor
         ]
         gradientLayer.startPoint = CGPoint(x: 0, y: 0)
         gradientLayer.endPoint = CGPoint(x: 1, y: 1)
-        overlayLayer.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
+        overlayLayer.backgroundColor = NSColor.clear.cgColor
         layer?.addSublayer(gradientLayer)
         layer?.addSublayer(overlayLayer)
     }
@@ -1183,9 +1141,9 @@ final class GlassCardView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = cornerRadius
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.11).cgColor
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.78).cgColor
         layer?.borderWidth = 1
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
     }
 
     required init?(coder: NSCoder) {
@@ -1194,13 +1152,13 @@ final class GlassCardView: NSView {
 }
 
 enum StudioUI {
-    static let white = NSColor.white
-    static let ink = NSColor(calibratedRed: 0.08, green: 0.06, blue: 0.18, alpha: 1)
-    static let muted = NSColor.white.withAlphaComponent(0.74)
-    static let cyan = NSColor(calibratedRed: 0.50, green: 0.92, blue: 1.0, alpha: 1)
-    static let lime = NSColor(calibratedRed: 0.78, green: 1.0, blue: 0.40, alpha: 1)
-    static let warning = NSColor(calibratedRed: 1.0, green: 0.78, blue: 0.16, alpha: 1)
-    static let coral = NSColor(calibratedRed: 1.0, green: 0.42, blue: 0.52, alpha: 1)
+    static let white = NSColor.labelColor
+    static let ink = NSColor.labelColor
+    static let muted = NSColor.secondaryLabelColor
+    static let cyan = NSColor.systemGreen
+    static let lime = NSColor.systemGreen
+    static let warning = NSColor.systemOrange
+    static let coral = NSColor.systemRed
 
     static func label(_ text: String, size: CGFloat, weight: NSFont.Weight = .regular, color: NSColor = white) -> NSTextField {
         let field = NSTextField(labelWithString: text)
@@ -1226,20 +1184,21 @@ enum StudioUI {
         button.bezelStyle = .rounded
         button.controlSize = .large
         button.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
-        button.contentTintColor = cyan
+        button.contentTintColor = NSColor.controlAccentColor
         return button
     }
 }
 
 final class ToolbarDashboardView: GradientPanelView {
     init(model: ToolbarDashboardModel) {
-        super.init(cornerRadius: 30, borderAlpha: 0.28)
-        frame = NSRect(x: 0, y: 0, width: 414, height: 292)
+        super.init(cornerRadius: 18, borderAlpha: 0.10)
+        frame = NSRect(x: 0, y: 0, width: 392, height: 184)
 
         let root = NSStackView()
         root.orientation = .vertical
-        root.spacing = 16
-        root.edgeInsets = NSEdgeInsets(top: 22, left: 22, bottom: 22, right: 22)
+        root.alignment = .width
+        root.spacing = 12
+        root.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
         root.translatesAutoresizingMaskIntoConstraints = false
         addSubview(root)
 
@@ -1250,80 +1209,94 @@ final class ToolbarDashboardView: GradientPanelView {
             root.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
 
-        let header = NSStackView()
-        header.orientation = .horizontal
-        header.alignment = .centerY
-        header.spacing = 12
+        let header = NSView()
+        header.translatesAutoresizingMaskIntoConstraints = false
 
-        let titleStack = NSStackView()
-        titleStack.orientation = .vertical
-        titleStack.spacing = 4
-        titleStack.addArrangedSubview(StudioUI.label(model.title, size: 27, weight: .bold))
-        titleStack.addArrangedSubview(StudioUI.label(model.email, size: 13.5, color: StudioUI.muted))
-        header.addArrangedSubview(titleStack)
-
-        let spacer = NSView()
-        header.addArrangedSubview(spacer)
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        let iconCard = GlassCardView(cornerRadius: 20)
-        iconCard.translatesAutoresizingMaskIntoConstraints = false
         let iconView = NSImageView(image: model.icon ?? NSImage())
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.translatesAutoresizingMaskIntoConstraints = false
-        iconCard.addSubview(iconView)
+        header.addSubview(iconView)
+
+        let titleStack = NSStackView()
+        titleStack.orientation = .vertical
+        titleStack.alignment = .leading
+        titleStack.spacing = 2
+        titleStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleLabel = StudioUI.label(model.title, size: 19, weight: .semibold)
+        titleLabel.alignment = .left
+        let emailLabel = StudioUI.label(model.email, size: 12, color: StudioUI.muted)
+        emailLabel.alignment = .left
+        titleStack.addArrangedSubview(titleLabel)
+        titleStack.addArrangedSubview(emailLabel)
+        header.addSubview(titleStack)
+
+        let planLabel = StudioUI.label(model.status, size: 12, weight: .medium, color: StudioUI.muted)
+        planLabel.alignment = .right
+        planLabel.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(planLabel)
+
         NSLayoutConstraint.activate([
-            iconCard.widthAnchor.constraint(equalToConstant: 62),
-            iconCard.heightAnchor.constraint(equalToConstant: 62),
-            iconView.centerXAnchor.constraint(equalTo: iconCard.centerXAnchor),
-            iconView.centerYAnchor.constraint(equalTo: iconCard.centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 38),
-            iconView.heightAnchor.constraint(equalToConstant: 38)
+            header.heightAnchor.constraint(equalToConstant: 44),
+            iconView.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 8),
+            iconView.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 30),
+            iconView.heightAnchor.constraint(equalToConstant: 30),
+            titleStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 14),
+            titleStack.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            titleStack.trailingAnchor.constraint(lessThanOrEqualTo: planLabel.leadingAnchor, constant: -14),
+            planLabel.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -8),
+            planLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            planLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 86)
         ])
-        header.addArrangedSubview(iconCard)
         root.addArrangedSubview(header)
 
-        let metricGrid = NSGridView(views: [
-            [metricCard(symbol: "timer", title: "5hr", value: model.fiveHourPercent, detail: model.fiveHourReset, color: StudioUI.cyan),
-             metricCard(symbol: "calendar", title: "Weekly", value: model.weeklyPercent, detail: model.weeklyReset, color: StudioUI.lime)],
-            [metricCard(symbol: "person.2.fill", title: "Accounts", value: model.accountCount, detail: "saved", color: StudioUI.warning),
-             metricCard(symbol: "sparkles", title: "Plan", value: model.status, detail: "active", color: StudioUI.coral)]
-        ])
-        metricGrid.rowSpacing = 12
-        metricGrid.columnSpacing = 12
-        root.addArrangedSubview(metricGrid)
+        let divider = NSBox()
+        divider.boxType = .separator
+        root.addArrangedSubview(divider)
+
+        let metrics = NSStackView()
+        metrics.orientation = .horizontal
+        metrics.alignment = .height
+        metrics.distribution = .fillEqually
+        metrics.spacing = 10
+        metrics.addArrangedSubview(metricCard(title: "5hr", value: model.fiveHourPercent, detail: model.fiveHourReset))
+        metrics.addArrangedSubview(metricCard(title: "Weekly", value: model.weeklyPercent, detail: model.weeklyReset))
+        metrics.addArrangedSubview(metricCard(title: "Accounts", value: model.accountCount, detail: "saved"))
+        root.addArrangedSubview(metrics)
     }
 
     required init?(coder: NSCoder) {
         nil
     }
 
-    private func metricCard(symbol: String, title: String, value: String, detail: String, color: NSColor) -> NSView {
-        let card = GlassCardView(cornerRadius: 14)
+    private func metricCard(title: String, value: String, detail: String) -> NSView {
+        let card = GlassCardView(cornerRadius: 10)
         let stack = NSStackView()
         stack.orientation = .vertical
-        stack.spacing = 6
-        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        stack.spacing = 3
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
         stack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(stack)
 
-        let top = NSStackView()
-        top.orientation = .horizontal
-        top.alignment = .centerY
-        top.spacing = 8
-        top.addArrangedSubview(StudioUI.symbol(symbol, size: 18, color: color))
-        top.addArrangedSubview(StudioUI.label(title, size: 13, weight: .semibold, color: StudioUI.muted))
-        stack.addArrangedSubview(top)
-        stack.addArrangedSubview(StudioUI.label(value, size: 20, weight: .bold, color: .white))
-        stack.addArrangedSubview(StudioUI.label(detail.isEmpty ? " " : detail, size: 12, color: StudioUI.muted))
+        let titleLabel = StudioUI.label(title, size: 11, weight: .medium, color: StudioUI.muted)
+        let valueLabel = StudioUI.label(value, size: 18, weight: .semibold)
+        let detailLabel = StudioUI.label(detail.isEmpty ? " " : detail, size: 12, color: StudioUI.muted)
+        [titleLabel, valueLabel, detailLabel].forEach { label in
+            label.alignment = .center
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        stack.addArrangedSubview(titleLabel)
+        stack.addArrangedSubview(valueLabel)
+        stack.addArrangedSubview(detailLabel)
+        card.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
             stack.topAnchor.constraint(equalTo: card.topAnchor),
             stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-            card.widthAnchor.constraint(equalToConstant: 179),
-            card.heightAnchor.constraint(equalToConstant: 82)
+            card.heightAnchor.constraint(equalToConstant: 74)
         ])
         return card
     }
@@ -1349,6 +1322,7 @@ struct CloneIdentityPlan {
     let bundleIdentifier: String
     let replacements: [(String, String)]
     let shouldPreserveEntitlements: Bool
+    let executableName: String?
 }
 
 final class InstanceManagerStore {
@@ -1495,7 +1469,14 @@ final class AppCloneManager {
             try fileManager.copyItem(at: sourceURL, to: cloneURL)
             try prepareDataFolders(at: dataURL)
             let iconFileName = try installCustomIcon(iconURL, in: cloneURL)
-            try rewriteInfoPlist(in: cloneURL, displayName: displayName, bundleIdentifier: bundleID, iconFileName: iconFileName)
+            let executableName = try renameMainExecutableIfNeeded(in: cloneURL, to: identityPlan.executableName)
+            try rewriteInfoPlist(
+                in: cloneURL,
+                displayName: displayName,
+                bundleIdentifier: bundleID,
+                iconFileName: iconFileName,
+                executableName: executableName
+            )
             try patchKnownSharedContainerIdentifiers(in: cloneURL, replacements: identityPlan.replacements)
             let entitlementsURL = identityPlan.shouldPreserveEntitlements
                 ? try patchedEntitlementsURL(for: sourceURL, replacements: identityPlan.replacements, bundleIdentifier: bundleID)
@@ -1560,7 +1541,16 @@ final class AppCloneManager {
         let running = isCloneProcessRunning(clone)
         let issues = recentIssueLog(for: clone)
         if !issues.isEmpty {
-            if issues.localizedCaseInsensitiveContains("shared container URL is nil") {
+            if issues.localizedCaseInsensitiveContains("another instance") {
+                updated.lastHealthStatus = "Instance blocked"
+            } else if issues.localizedCaseInsensitiveContains("restart before linking") {
+                updated.lastHealthStatus = "Pairing blocked"
+            } else if clone.bundleIdentifier.hasPrefix("net.whatsapp.WhatsA")
+                && (issues.localizedCaseInsensitiveContains("wa_exit")
+                    || issues.localizedCaseInsensitiveContains("WACurrentProcessType")
+                    || issues.localizedCaseInsensitiveContains("BUG IN CLIENT OF LIBDISPATCH")) {
+                updated.lastHealthStatus = "WhatsApp blocked"
+            } else if issues.localizedCaseInsensitiveContains("shared container URL is nil") {
                 updated.lastHealthStatus = "App-group issue"
             } else if issues.localizedCaseInsensitiveContains("database is locked") {
                 updated.lastHealthStatus = "Data lock issue"
@@ -1740,7 +1730,8 @@ final class AppCloneManager {
                     ("ru.keepcoder.Telegram.TelegramShare", "ru.keepcoder.Telegr\(suffix).TelegramShare"),
                     ("ru.keepcoder.Telegram", "ru.keepcoder.Telegr\(suffix)")
                 ],
-                shouldPreserveEntitlements: true
+                shouldPreserveEntitlements: true,
+                executableName: nil
             )
         case "net.whatsapp.WhatsApp":
             return CloneIdentityPlan(
@@ -1756,13 +1747,15 @@ final class AppCloneManager {
                     ("iCloud.net.whatsapp.WhatsApp", "iCloud.net.whatsapp.WhatsA\(suffix)"),
                     ("net.whatsapp.WhatsApp", "net.whatsapp.WhatsA\(suffix)")
                 ],
-                shouldPreserveEntitlements: false
+                shouldPreserveEntitlements: false,
+                executableName: "WhatsApp\(suffix)"
             )
         default:
             return CloneIdentityPlan(
                 bundleIdentifier: fallbackBundleIdentifier,
                 replacements: [],
-                shouldPreserveEntitlements: true
+                shouldPreserveEntitlements: true,
+                executableName: nil
             )
         }
     }
@@ -1955,12 +1948,33 @@ final class AppCloneManager {
         return fileName
     }
 
-    private func rewriteInfoPlist(in appURL: URL, displayName: String, bundleIdentifier: String, iconFileName: String?) throws {
+    private func renameMainExecutableIfNeeded(in appURL: URL, to executableName: String?) throws -> String? {
+        guard let executableName, !executableName.isEmpty else { return nil }
+        let currentURL = try executableURL(for: appURL)
+        guard currentURL.lastPathComponent != executableName else { return executableName }
+        let renamedURL = currentURL.deletingLastPathComponent().appendingPathComponent(executableName)
+        if fileManager.fileExists(atPath: renamedURL.path) {
+            try fileManager.removeItem(at: renamedURL)
+        }
+        try fileManager.moveItem(at: currentURL, to: renamedURL)
+        return executableName
+    }
+
+    private func rewriteInfoPlist(
+        in appURL: URL,
+        displayName: String,
+        bundleIdentifier: String,
+        iconFileName: String?,
+        executableName: String?
+    ) throws {
         let plistURL = appURL.appendingPathComponent("Contents/Info.plist")
         var plist = try readInfoPlist(in: appURL)
         plist["CFBundleIdentifier"] = bundleIdentifier
         plist["CFBundleName"] = displayName
         plist["CFBundleDisplayName"] = displayName
+        if let executableName {
+            plist["CFBundleExecutable"] = executableName
+        }
         if let iconFileName {
             plist["CFBundleIconFile"] = iconFileName
             plist["CFBundleIconName"] = nil
@@ -2009,7 +2023,7 @@ final class AppCloneManager {
         let executableName = (try? readInfoPlist(in: appURL)["CFBundleExecutable"] as? String) ?? appURL.deletingPathExtension().lastPathComponent
         let processPredicate = clone.lastPID.map { "processID == \($0)" } ?? "process == \"\(executableName)\""
         let predicate = """
-        process != "log" AND (\(processPredicate) OR eventMessage CONTAINS[c] "\(clone.bundleIdentifier)" OR eventMessage CONTAINS[c] "\(appURL.lastPathComponent)") AND (eventMessage CONTAINS[c] "restart before linking" OR eventMessage CONTAINS[c] "shared container URL is nil" OR eventMessage CONTAINS[c] "database is locked" OR eventMessage CONTAINS[c] "Library not loaded" OR eventMessage CONTAINS[c] "Code has restricted entitlements" OR eventMessage CONTAINS[c] "code signature validation failed" OR eventMessage CONTAINS[c] "Launch failed" OR eventMessage CONTAINS[c] "Unsatisfied Entitlements" OR eventMessage CONTAINS[c] "AMFI" OR eventMessage CONTAINS[c] "dyld")
+        process != "log" AND (\(processPredicate) OR eventMessage CONTAINS[c] "\(clone.bundleIdentifier)" OR eventMessage CONTAINS[c] "\(appURL.lastPathComponent)") AND (eventMessage CONTAINS[c] "another instance" OR eventMessage CONTAINS[c] "restart before linking" OR eventMessage CONTAINS[c] "shared container URL is nil" OR eventMessage CONTAINS[c] "database is locked" OR eventMessage CONTAINS[c] "Library not loaded" OR eventMessage CONTAINS[c] "Code has restricted entitlements" OR eventMessage CONTAINS[c] "code signature validation failed" OR eventMessage CONTAINS[c] "Launch failed" OR eventMessage CONTAINS[c] "Unsatisfied Entitlements" OR eventMessage CONTAINS[c] "AMFI" OR eventMessage CONTAINS[c] "dyld")
         """
         let result = runSync("/usr/bin/log", ["show", "--last", "3m", "--style", "compact", "--predicate", predicate])
         guard result.status == 0 else {
@@ -2019,8 +2033,57 @@ final class AppCloneManager {
             .split(whereSeparator: \.isNewline)
             .map(String.init)
             .filter { !$0.contains(" log[") && !$0.contains("log show") }
+            .filter { !$0.localizedCaseInsensitiveContains(" is adhoc signed") }
             .suffix(16)
-        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let logIssues = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let crashIssues = recentDiagnosticReport(for: executableName)
+        return [logIssues, crashIssues]
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func recentDiagnosticReport(for executableName: String) -> String {
+        let reportsURL = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Logs/DiagnosticReports")
+        guard let reports = try? fileManager.contentsOfDirectory(
+            at: reportsURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return ""
+        }
+
+        let cutoff = Date().addingTimeInterval(-5 * 60)
+        let newestReport = reports
+            .filter { $0.lastPathComponent.hasPrefix("\(executableName)-") && $0.pathExtension == "ips" }
+            .compactMap { url -> (URL, Date)? in
+                let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return date >= cutoff ? (url, date) : nil
+            }
+            .sorted { $0.1 > $1.1 }
+            .first?.0
+
+        guard let newestReport,
+              let text = try? String(contentsOf: newestReport, encoding: .utf8) else {
+            return ""
+        }
+
+        let interesting = text
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .filter {
+                $0.contains("\"exception\"")
+                    || $0.contains("\"termination\"")
+                    || $0.contains("\"asi\"")
+                    || $0.contains("\"procName\"")
+                    || $0.contains("WACurrentProcessType")
+                    || $0.contains("wa_exit")
+                    || $0.contains("BUG IN CLIENT OF LIBDISPATCH")
+            }
+            .prefix(12)
+        guard !interesting.isEmpty else { return "" }
+        return "Crash report: \(newestReport.lastPathComponent)\n\(interesting.joined(separator: "\n"))"
     }
 
     private func registerWithLaunchServices(_ appURL: URL) {
@@ -2154,8 +2217,8 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         let titleStack = NSStackView()
         titleStack.orientation = .vertical
         titleStack.spacing = 5
-        titleStack.addArrangedSubview(StudioUI.label("App Clone Studio", size: 34, weight: .bold))
-        titleStack.addArrangedSubview(StudioUI.label("Separate app data, identity, containers, entitlements, and live health logs", size: 14, color: StudioUI.muted))
+        titleStack.addArrangedSubview(StudioUI.label("Instance Manager", size: 28, weight: .semibold))
+        titleStack.addArrangedSubview(StudioUI.label("Create and inspect isolated app clones.", size: 13, color: StudioUI.muted))
         header.addArrangedSubview(titleStack)
         let headerSpacer = NSView()
         header.addArrangedSubview(headerSpacer)
@@ -2169,7 +2232,7 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         badgeStack.translatesAutoresizingMaskIntoConstraints = false
         healthBadge.addSubview(badgeStack)
         badgeStack.addArrangedSubview(StudioUI.symbol("waveform.path.ecg", size: 20, color: StudioUI.lime))
-        badgeStack.addArrangedSubview(StudioUI.label("Health: Live", size: 14, weight: .semibold, color: StudioUI.lime))
+        badgeStack.addArrangedSubview(StudioUI.label("Health: Live", size: 13, weight: .medium, color: StudioUI.lime))
         NSLayoutConstraint.activate([
             badgeStack.leadingAnchor.constraint(equalTo: healthBadge.leadingAnchor),
             badgeStack.trailingAnchor.constraint(equalTo: healthBadge.trailingAnchor),
@@ -2261,7 +2324,7 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         scrollView.hasVerticalScroller = true
         scrollView.documentView = tableView
         tableView.backgroundColor = .clear
-        tableView.gridColor = NSColor.white.withAlphaComponent(0.12)
+        tableView.gridColor = NSColor.black.withAlphaComponent(0.08)
         tableView.usesAlternatingRowBackgroundColors = false
         tableView.allowsMultipleSelection = true
         tableView.delegate = self
@@ -2290,8 +2353,8 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         logScroll.hasVerticalScroller = true
         logScroll.documentView = logTextView
         logTextView.isEditable = false
-        logTextView.backgroundColor = NSColor.white.withAlphaComponent(0.10)
-        logTextView.textColor = StudioUI.muted
+        logTextView.backgroundColor = NSColor.white.withAlphaComponent(0.78)
+        logTextView.textColor = StudioUI.ink
         logTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         logTextView.string = "Live health log ready."
         root.addArrangedSubview(logScroll)
@@ -2317,8 +2380,8 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
         field.isBezeled = true
         field.isBordered = false
         field.drawsBackground = true
-        field.backgroundColor = NSColor.white.withAlphaComponent(0.14)
-        field.textColor = .white
+        field.backgroundColor = NSColor.white.withAlphaComponent(0.86)
+        field.textColor = StudioUI.ink
         field.font = NSFont.systemFont(ofSize: 13, weight: .medium)
     }
 
@@ -2590,7 +2653,7 @@ final class InstanceManagerWindowController: NSWindowController, NSTableViewData
             let health = clone.lastHealthStatus ?? ""
             textField.textColor = health.contains("Issue") || health.contains("Exited") ? StudioUI.coral : StudioUI.lime
         } else {
-            textField.textColor = StudioUI.white.withAlphaComponent(tableColumn.identifier.rawValue == "status" ? 0.86 : 0.96)
+            textField.textColor = tableColumn.identifier.rawValue == "status" ? StudioUI.muted : StudioUI.ink
         }
         textField.font = NSFont.systemFont(ofSize: 12.5, weight: tableColumn.identifier.rawValue == "name" ? .semibold : .regular)
         textField.stringValue = value
