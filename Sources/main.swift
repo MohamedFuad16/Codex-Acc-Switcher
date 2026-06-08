@@ -130,9 +130,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func refreshAccounts() {
         guard !isSwitching else { return }
         DispatchQueue.global(qos: .utility).async {
-            var result = self.runCodexAuth(["list", "--active"])
+            // `--active` is not a valid `list` flag in published codex-auth (0.2.x),
+            // so the call fails and silently falls through. Use the cached `--skip-api`
+            // listing (fast, suitable for the 5s poll); the active row is still marked
+            // with `*`, which parseAccounts relies on.
+            var result = self.runCodexAuth(["list", "--skip-api"])
             if result.status != 0 {
-                result = self.runCodexAuth(["list", "--skip-api"])
+                result = self.runCodexAuth(["list"])
             }
             let parsed = result.status == 0 ? self.parseAccounts(result.output) : []
             DispatchQueue.main.async {
@@ -533,7 +537,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         alert.addButton(withTitle: "Cancel")
 
         if alert.runModal() == .alertFirstButtonReturn {
-            runAccountMaintenance(title: "Removing account", args: ["remove", selector])
+            // `remove <query>` matches by email/alias, not the row-number selector.
+            runAccountMaintenance(title: "Removing account", args: ["remove", account.email])
         }
     }
 
@@ -568,7 +573,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 return
             }
 
-            let switchResult = self.runCodexAuth(["switch", selector])
+            // `switch <query>` matches by email/alias, not the row-number selector,
+            // so pass the account email (falling back to the selector if unknown).
+            let switchResult = self.runCodexAuth(["switch", target?.email ?? selector])
             if switchResult.status != 0 {
                 DispatchQueue.main.async {
                     self.isSwitching = false
