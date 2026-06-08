@@ -30,7 +30,7 @@
 
 **Codex Account Switcher** is an ultra-lightweight, blazing-fast macOS menu bar utility built in pure Swift. It eliminates the friction of managing multiple OpenAI Codex / ChatGPT credentials on your local machine.
 
-With zero external package dependencies, it integrates directly with standard macOS system APIs to hot-swap account tokens, safely restart active desktop applications, feed real-time usage budgets into your status bar, and manage isolated multi-instance app clones from a native Mac window.
+With zero external package dependencies, it integrates directly with standard macOS system APIs to hot-swap account tokens, safely restart Codex, preserve refreshed auth snapshots, and keep usage budgets visible in your status bar.
 
 ---
 
@@ -46,7 +46,12 @@ With zero external package dependencies, it integrates directly with standard ma
 
 ### 📊 Real-Time Usage & Cap Meters
 *   Track remaining account limits (5-Hour and Weekly) directly in your status bar or inside the dropdown column.
-*   Timers are registered in the `.common` run loop mode, ensuring background checks keep updating even when you are interacting with the menu!
+*   Fast local polling keeps the menu-bar display responsive without hammering remote auth APIs.
+*   **Live Usage Refresh** lets you choose a throttled API refresh cadence, with **Refresh Usage Now** for an immediate live update.
+
+### 🔐 Session Preservation
+*   The switcher syncs a newer active `~/.codex/auth.json` back into the saved active account snapshot so refreshed tokens are not lost when switching away.
+*   **Sync Active Session** lets you manually preserve the current active session before changing accounts.
 
 ### 🔔 Low-Usage Notifications
 *   Get a macOS notification when the active account drops below your chosen usage threshold.
@@ -64,19 +69,6 @@ With zero external package dependencies, it integrates directly with standard ma
 *   `Sources/icon.png` is packaged as the application icon.
 *   `Sources/toolbar-icon.png` is bundled separately for the menu bar status item.
 
-### 🧩 Isolated App Instance Manager
-*   Open **Open Instance Manager** from the menu bar dropdown to clone any `.app` bundle.
-*   Create 1-12 managed clones with unique bundle identifiers and separate app data roots.
-*   Set a custom clone name prefix and choose a `.png` or `.icns` icon before creating clones.
-*   Launch selected clones or all clones at once.
-*   The redesigned macOS glass-style Clone Studio shows clone identity, data paths, process status, and live health checks in one window.
-*   Use **Health Check** to inspect recent macOS unified logs for the selected clone. Post-launch checks also run automatically, and running clones are monitored every few seconds.
-*   For Codex/Electron-style apps, each clone is launched with isolated `HOME`, `CFFIXED_USER_HOME`, `CODEX_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `TMPDIR`, and `--user-data-dir` values so memory, local settings, cache, and Chromium profile data stay separated.
-*   For native apps such as Telegram and WhatsApp, Electron-only flags are skipped and each process gets its own fixed macOS user home, including per-clone `Library/Preferences`, `Library/Application Support`, `Library/Containers`, and `Library/Group Containers` folders.
-*   Known fixed-container apps such as Telegram and WhatsApp also get per-clone container identifier remapping so logging into or out of one clone does not reuse the original shared app-group account container.
-*   WhatsApp is best-effort on current macOS releases: the app can clone, re-sign, launch, and diagnose WhatsApp, but WhatsApp's phone-linking flow may still require Apple-granted app-group entitlements that ad-hoc local clones cannot fully satisfy. In that case Clone Studio reports **App-group issue** and logs the exact `shared container URL is nil` message.
-*   Reveal clone bundles, open their data folders, or remove clone bundles while optionally preserving their data.
-
 ---
 
 ## ⚙️ How It Works
@@ -89,13 +81,9 @@ The Swift menu bar orchestrates token swapping and app lifecycle management secu
        ├─► [1] Swaps active credentials safely in registry.json & auth.json
        ├─► [2] Triggers background process termination signals (SIGTERM/SIGKILL)
        ├─► [3] Relaunches desktop app via CLI fallback (`open -a Codex`)
-       ├─► [4] Starts smooth Braille spinner on Main Thread (.common Run Loop)
-       └─► [5] Opens the native Instance Manager for isolated app clones
+       ├─► [4] Preserves newer active auth snapshots before switching
+       └─► [5] Keeps usage display fresh with local polling plus throttled live refresh
 ```
-
-The Instance Manager uses a bundle-clone strategy: each clone gets a rewritten `CFBundleIdentifier`, display name, optional icon, local signing, and Launch Services registration. Runtime isolation is handled by launching the clone process with a dedicated data directory and environment variables. Electron/Chromium apps receive `--user-data-dir`; native apps do not. For Telegram and WhatsApp, known fixed container identifiers are rewritten to per-clone identifiers with equal-length binary patches before signing.
-
-Clone health checks read recent macOS unified logs and surface the relevant failure directly in the app. For example, WhatsApp clones on macOS 26 can launch successfully but still show **App-group issue** if WhatsApp reports `WAAnalyticsExtensionStoreIntegration: shared container URL is nil`; this means the clone is running, but WhatsApp's pairing flow is blocked by app-group entitlement behavior rather than by a missing file or generic crash.
 
 ---
 
