@@ -1,5 +1,8 @@
 import AppKit
 import Foundation
+import QuartzCore
+
+// MARK: - Data Models
 
 struct CodexAccount {
     let selector: String
@@ -23,7 +26,508 @@ struct CommandResult {
     let output: String
 }
 
+// MARK: - Menu Bar Icon Generator
+
+/// Draws a crisp, template-mode menu bar icon programmatically so we never
+/// depend on Codex.app shipping a specific asset.  The icon is a stylised
+/// switch / arrows-in-circle glyph that reads well at 18×18 pt.
+enum MenuBarIcon {
+
+    /// Try SF Symbols first (available on macOS 11+), fall back to a
+    /// hand-drawn glyph if the symbol isn't present.
+    static func create() -> NSImage {
+        // Primary choice: SF Symbol "arrow.triangle.2.circlepath"
+        if let sf = NSImage(systemSymbolName: "arrow.triangle.2.circlepath",
+                            accessibilityDescription: "Account Switcher") {
+            let img = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
+                sf.draw(in: rect.insetBy(dx: 1, dy: 1))
+                return true
+            }
+            img.isTemplate = true
+            return img
+        }
+
+        // Fallback: draw two curved arrows inside a circle
+        let size = NSSize(width: 18, height: 18)
+        let img = NSImage(size: size, flipped: false) { rect in
+            let ctx = NSGraphicsContext.current!.cgContext
+            let center = CGPoint(x: rect.midX, y: rect.midY)
+            let r: CGFloat = 7
+            NSColor.black.setStroke()
+
+            // Circle outline
+            ctx.setLineWidth(1.3)
+            ctx.addEllipse(in: CGRect(x: center.x - r, y: center.y - r,
+                                      width: r * 2, height: r * 2))
+            ctx.strokePath()
+
+            // Upper arrow arc
+            let arrowR: CGFloat = 4.2
+            ctx.setLineWidth(1.4)
+            ctx.addArc(center: center, radius: arrowR,
+                       startAngle: -.pi * 0.15, endAngle: .pi * 0.65,
+                       clockwise: true)
+            ctx.strokePath()
+
+            // Arrowhead on upper arc
+            let tipAngle: CGFloat = -.pi * 0.15
+            let tipX = center.x + arrowR * cos(tipAngle)
+            let tipY = center.y + arrowR * sin(tipAngle)
+            ctx.move(to: CGPoint(x: tipX, y: tipY))
+            ctx.addLine(to: CGPoint(x: tipX + 2.5, y: tipY + 1.5))
+            ctx.move(to: CGPoint(x: tipX, y: tipY))
+            ctx.addLine(to: CGPoint(x: tipX + 0.5, y: tipY + 3))
+            ctx.strokePath()
+
+            // Lower arrow arc
+            ctx.addArc(center: center, radius: arrowR,
+                       startAngle: .pi * 0.85, endAngle: -.pi * 0.35,
+                       clockwise: true)
+            ctx.strokePath()
+
+            let tipAngle2: CGFloat = .pi * 0.85
+            let tipX2 = center.x + arrowR * cos(tipAngle2)
+            let tipY2 = center.y + arrowR * sin(tipAngle2)
+            ctx.move(to: CGPoint(x: tipX2, y: tipY2))
+            ctx.addLine(to: CGPoint(x: tipX2 - 2.5, y: tipY2 - 1.5))
+            ctx.move(to: CGPoint(x: tipX2, y: tipY2))
+            ctx.addLine(to: CGPoint(x: tipX2 - 0.5, y: tipY2 - 3))
+            ctx.strokePath()
+
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+}
+
+// MARK: - Account Card View (Custom Menu Item)
+
+/// Rich account row with coloured avatar circle, email, plan badge, and
+/// active-state indicator.  Drawn entirely in `draw(_:)` for snappy rendering.
+final class AccountCardView: NSView {
+
+    private let account: CodexAccount
+    private let label: String
+    private let enabled: Bool
+    var onSelect: (() -> Void)?
+
+    private var isHighlighted = false
+    private var trackingArea: NSTrackingArea?
+
+    init(account: CodexAccount, label: String, enabled: Bool, action: (() -> Void)?) {
+        self.account = account
+        self.label = label
+        self.enabled = enabled
+        self.onSelect = action
+        super.init(frame: NSRect(x: 0, y: 0, width: 300, height: 48))
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 300, height: 48) }
+
+    // MARK: Mouse
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let ta = trackingArea { removeTrackingArea(ta) }
+        let ta = NSTrackingArea(rect: bounds,
+                                options: [.mouseEnteredAndExited, .activeInActiveApp],
+                                owner: self, userInfo: nil)
+        addTrackingArea(ta)
+        trackingArea = ta
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard enabled else { return }
+        isHighlighted = true; needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHighlighted = false; needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard enabled else { return }
+        onSelect?()
+        enclosingMenuItem?.menu?.cancelTracking()
+    }
+
+    // MARK: Drawing
+
+    override func draw(_ dirtyRect: NSRect) {
+        let hPad: CGFloat = 16
+
+        // Hover highlight
+        if isHighlighted {
+            NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 2),
+                         xRadius: 6, yRadius: 6).fill()
+        }
+
+        // ── Avatar circle ──
+        let avatarSize: CGFloat = 30
+        let avatarY = (bounds.height - avatarSize) / 2
+        let avatarRect = NSRect(x: hPad, y: avatarY, width: avatarSize, height: avatarSize)
+
+        let avatarColor = avatarHue(for: account.email)
+        avatarColor.setFill()
+        NSBezierPath(ovalIn: avatarRect).fill()
+
+        // Initials inside avatar
+        let initials = avatarInitials(account.email)
+        let initialAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: NSColor.white
+        ]
+        let initialStr = NSAttributedString(string: initials, attributes: initialAttrs)
+        let initialSize = initialStr.size()
+        initialStr.draw(at: NSPoint(
+            x: avatarRect.midX - initialSize.width / 2,
+            y: avatarRect.midY - initialSize.height / 2
+        ))
+
+        // ── Text column ──
+        let textX = hPad + avatarSize + 10
+        let textW = bounds.width - textX - hPad - 50
+
+        // Email (primary line)
+        let emailAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: account.isActive ? .semibold : .regular),
+            .foregroundColor: enabled ? NSColor.labelColor : NSColor.tertiaryLabelColor
+        ]
+        let emailStr = NSAttributedString(string: account.email, attributes: emailAttrs)
+        emailStr.draw(in: NSRect(x: textX, y: bounds.height - 20, width: textW, height: 16))
+
+        // Selector + Plan (secondary line)
+        let detailAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
+        let planStr = displayPlan(account.plan)
+        let detailStr = NSAttributedString(string: "#\(account.selector) · \(planStr)", attributes: detailAttrs)
+        detailStr.draw(at: NSPoint(x: textX, y: bounds.height - 34))
+
+        // ── Right side: active badge or label ──
+        if account.isActive {
+            // Green "Active" pill
+            let pillText = "Active"
+            let pillFont = NSFont.systemFont(ofSize: 9, weight: .semibold)
+            let pillAttrs: [NSAttributedString.Key: Any] = [
+                .font: pillFont,
+                .foregroundColor: NSColor.white
+            ]
+            let pillStr = NSAttributedString(string: pillText, attributes: pillAttrs)
+            let pillSize = pillStr.size()
+            let pillW = pillSize.width + 12
+            let pillH: CGFloat = 18
+            let pillRect = NSRect(x: bounds.width - hPad - pillW,
+                                  y: (bounds.height - pillH) / 2,
+                                  width: pillW, height: pillH)
+            NSColor.systemGreen.setFill()
+            NSBezierPath(roundedRect: pillRect, xRadius: pillH / 2, yRadius: pillH / 2).fill()
+            pillStr.draw(at: NSPoint(x: pillRect.midX - pillSize.width / 2,
+                                     y: pillRect.midY - pillSize.height / 2))
+        } else {
+            // Show label text
+            let lblAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor.tertiaryLabelColor
+            ]
+            let lblStr = NSAttributedString(string: label, attributes: lblAttrs)
+            let lblSize = lblStr.size()
+            lblStr.draw(at: NSPoint(x: bounds.width - hPad - lblSize.width,
+                                    y: (bounds.height - lblSize.height) / 2))
+        }
+    }
+
+    // MARK: Helpers
+
+    private func avatarHue(for email: String) -> NSColor {
+        // Deterministic colour from email hash, adapts for dark / light mode
+        let hash = abs(email.hashValue)
+        let hue = CGFloat(hash % 360) / 360.0
+        return NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return NSColor(hue: hue,
+                           saturation: isDark ? 0.45 : 0.58,
+                           brightness: isDark ? 0.80 : 0.62,
+                           alpha: 1.0)
+        }
+    }
+
+    private func avatarInitials(_ email: String) -> String {
+        let local = email.split(separator: "@").first.map(String.init) ?? email
+        let parts = local.split(separator: ".")
+        if parts.count >= 2 {
+            return "\(parts[0].prefix(1))\(parts[1].prefix(1))".uppercased()
+        }
+        return String(local.prefix(2)).uppercased()
+    }
+
+    private func displayPlan(_ plan: String) -> String {
+        guard let first = plan.first else { return plan }
+        return first.uppercased() + plan.dropFirst().lowercased()
+    }
+}
+
+// MARK: - Glass Usage Bar View
+
+/// Custom menu-item view with animated progress bar and liquid-glass highlight.
+final class GlassUsageBarView: NSView {
+
+    // Content
+    private let title: String
+    private let percent: String
+    private let resetText: String
+    private let progress: CGFloat          // target (0…1)
+    private let isSelectedMode: Bool
+    private let hasData: Bool              // false when usage data unavailable
+    var onSelect: (() -> Void)?
+
+    // State
+    private var displayProgress: CGFloat = 0   // animated value
+    private var isHighlighted = false
+    private var trackingArea: NSTrackingArea?
+    private var animationTimer: Timer?
+    private var animationStart: CFTimeInterval = 0
+    private let animationDuration: CFTimeInterval = 0.45
+
+    init(title: String, percent: String, resetText: String,
+         progress: CGFloat, isSelected: Bool, hasData: Bool, action: (() -> Void)?) {
+        self.title = title
+        self.percent = percent
+        self.resetText = resetText
+        self.progress = max(0, min(1, progress))
+        self.isSelectedMode = isSelected
+        self.hasData = hasData
+        self.onSelect = action
+        super.init(frame: NSRect(x: 0, y: 0, width: 300, height: 46))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 300, height: 46) }
+
+    // MARK: Mouse tracking
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let ta = trackingArea { removeTrackingArea(ta) }
+        let ta = NSTrackingArea(rect: bounds,
+                                options: [.mouseEnteredAndExited, .activeInActiveApp],
+                                owner: self, userInfo: nil)
+        addTrackingArea(ta)
+        trackingArea = ta
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHighlighted = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHighlighted = false
+        needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        onSelect?()
+        enclosingMenuItem?.menu?.cancelTracking()
+    }
+
+    // MARK: Fill animation — ease-out cubic on appear
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil, hasData {
+            displayProgress = 0
+            needsDisplay = true
+            animationStart = CACurrentMediaTime()
+            animationTimer?.invalidate()
+            let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
+                guard let self else { t.invalidate(); return }
+                let elapsed = CACurrentMediaTime() - self.animationStart
+                let normalized = min(1.0, elapsed / self.animationDuration)
+                let eased = 1.0 - pow(1.0 - normalized, 3.0)
+                self.displayProgress = self.progress * CGFloat(eased)
+                self.needsDisplay = true
+                if normalized >= 1.0 { self.animationTimer?.invalidate(); self.animationTimer = nil }
+            }
+            RunLoop.current.add(timer, forMode: .common)
+            animationTimer = timer
+        } else if window != nil {
+            displayProgress = 0
+            needsDisplay = true
+        } else {
+            animationTimer?.invalidate()
+            animationTimer = nil
+        }
+    }
+
+    // MARK: Drawing
+
+    override func draw(_ dirtyRect: NSRect) {
+        let hPad: CGFloat = 20
+        let textY: CGFloat = 26
+        let barY: CGFloat = 8
+        let barH: CGFloat = 5
+        let innerWidth = bounds.width - hPad * 2
+
+        // Hover highlight
+        if isHighlighted {
+            NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 1),
+                         xRadius: 6, yRadius: 6).fill()
+        }
+
+        // Checkmark indicator
+        var textX = hPad
+        if isSelectedMode {
+            let checkAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 13, weight: .bold),
+                .foregroundColor: NSColor.controlAccentColor
+            ]
+            NSAttributedString(string: "✓ ", attributes: checkAttrs)
+                .draw(at: NSPoint(x: textX, y: textY))
+            textX += 18
+        }
+
+        // Title
+        let titleAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+            .foregroundColor: NSColor.labelColor
+        ]
+        NSAttributedString(string: title, attributes: titleAttrs)
+            .draw(at: NSPoint(x: textX, y: textY))
+
+        // Reset text (right-aligned)
+        if !resetText.isEmpty {
+            let resetAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 10, weight: .regular),
+                .foregroundColor: NSColor.tertiaryLabelColor
+            ]
+            let resetStr = NSAttributedString(string: resetText, attributes: resetAttrs)
+            let resetSize = resetStr.size()
+            let resetX = bounds.width - hPad - resetSize.width
+            resetStr.draw(at: NSPoint(x: resetX, y: textY + 2))
+        }
+
+        // Percentage (colour-coded)
+        let pColor = hasData ? progressColor(for: displayProgress) : NSColor.tertiaryLabelColor
+        let percentAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold),
+            .foregroundColor: pColor
+        ]
+        let percentStr = NSAttributedString(string: percent, attributes: percentAttrs)
+        let percentSize = percentStr.size()
+        // Position percent between title and reset text
+        let percentRightEdge = resetText.isEmpty
+            ? bounds.width - hPad
+            : bounds.width - hPad - NSAttributedString(string: resetText, attributes: [
+                .font: NSFont.systemFont(ofSize: 10)
+              ]).size().width - 12
+        percentStr.draw(at: NSPoint(x: percentRightEdge - percentSize.width, y: textY))
+
+        // ── Progress bar ──
+
+        // Track
+        let trackRect = NSRect(x: hPad, y: barY, width: innerWidth, height: barH)
+        NSColor.separatorColor.withAlphaComponent(0.18).setFill()
+        NSBezierPath(roundedRect: trackRect,
+                     xRadius: barH / 2, yRadius: barH / 2).fill()
+
+        // Fill with gradient + liquid-glass highlight
+        if hasData, displayProgress > 0 {
+            let fillW = max(barH, trackRect.width * displayProgress)
+            let fillRect = NSRect(x: trackRect.minX, y: trackRect.minY,
+                                  width: fillW, height: barH)
+            let fillPath = NSBezierPath(roundedRect: fillRect,
+                                        xRadius: barH / 2, yRadius: barH / 2)
+
+            if let gradient = NSGradient(colors: [pColor.withAlphaComponent(0.55), pColor]) {
+                gradient.draw(in: fillPath, angle: 0)
+            }
+
+            // Liquid-glass specular highlight stripe (adapts for dark / light)
+            if fillW > 10 {
+                let hlRect = NSRect(x: fillRect.minX + 2,
+                                    y: fillRect.midY + 0.5,
+                                    width: fillRect.width - 4,
+                                    height: barH * 0.35)
+                let hlColor = NSColor(name: nil) { appearance in
+                    let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                    return NSColor.white.withAlphaComponent(isDark ? 0.22 : 0.35)
+                }
+                hlColor.setFill()
+                NSBezierPath(roundedRect: hlRect, xRadius: 1.5, yRadius: 1.5).fill()
+            }
+        } else if !hasData {
+            // Dashed placeholder track when no data
+            let dashPattern: [CGFloat] = [3, 3]
+            NSColor.tertiaryLabelColor.withAlphaComponent(0.25).setStroke()
+            let dashed = NSBezierPath(roundedRect: trackRect.insetBy(dx: 0.5, dy: 0.5),
+                                      xRadius: barH / 2, yRadius: barH / 2)
+            dashed.lineWidth = 1
+            dashed.setLineDash(dashPattern, count: dashPattern.count, phase: 0)
+            dashed.stroke()
+        }
+    }
+
+    private func progressColor(for value: CGFloat) -> NSColor {
+        if value > 0.5  { return .systemGreen }
+        if value > 0.25 { return .systemOrange }
+        return .systemRed
+    }
+}
+
+// MARK: - Section Header View
+
+/// Styled section header with optional SF Symbol icon.
+final class SectionHeaderView: NSView {
+
+    private let title: String
+    private let symbolName: String?
+
+    init(title: String, symbolName: String? = nil) {
+        self.title = title
+        self.symbolName = symbolName
+        super.init(frame: NSRect(x: 0, y: 0, width: 300, height: 28))
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 300, height: 28) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let hPad: CGFloat = 16
+        var textX = hPad
+
+        // Optional SF Symbol icon
+        if let name = symbolName,
+           let symbol = NSImage(systemSymbolName: name, accessibilityDescription: title) {
+            let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+            let configured = symbol.withSymbolConfiguration(config) ?? symbol
+            let iconSize: CGFloat = 14
+            let iconY = (bounds.height - iconSize) / 2
+            configured.draw(in: NSRect(x: textX, y: iconY, width: iconSize, height: iconSize))
+            textX += iconSize + 6
+        }
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
+        NSAttributedString(string: title.uppercased(), attributes: attrs)
+            .draw(at: NSPoint(x: textX, y: 7))
+    }
+}
+
+// MARK: - App Delegate
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
+
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let refreshInterval: TimeInterval = 5
     private let labelsDefaultsKey = "accountDisplayLabels"
@@ -44,6 +548,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: Launch
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         configureStatusButton()
@@ -59,31 +565,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button else { return }
         button.title = ""
         button.toolTip = "Codex Account Switcher"
-        button.image = loadCodexIcon()
+        button.image = MenuBarIcon.create()
         button.imagePosition = .imageLeft
+        button.wantsLayer = true
     }
 
-    private func loadCodexIcon() -> NSImage? {
-        let candidates = [
-            "/Applications/Codex.app/Contents/Resources/icon.icns",
-            "/Applications/Codex.app/Contents/Resources/codexTemplate@2x.png",
-            "/Applications/Codex.app/Contents/Resources/codexTemplate.png"
-        ]
-
-        guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }),
-              let image = NSImage(contentsOfFile: path) else {
-            return nil
-        }
-        image.size = NSSize(width: 18, height: 18)
-        return image
-    }
+    // MARK: Data refresh
 
     private func refreshAccounts() {
         guard !isSwitching else { return }
-        DispatchQueue.global(qos: .utility).async {
-            var result = self.runCodexAuth(["list", "--active"])
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            // codex-auth 0.2.x does not support `list --active`; use `--skip-api`
+            // as the primary flag (fast, suitable for the 5s poll). The active row
+            // is still marked with `*`, which parseAccounts relies on.
+            var result = self.runCodexAuth(["list", "--skip-api"])
             if result.status != 0 {
-                result = self.runCodexAuth(["list", "--skip-api"])
+                result = self.runCodexAuth(["list"])
             }
             let parsed = result.status == 0 ? self.parseAccounts(result.output) : []
             DispatchQueue.main.async {
@@ -99,90 +597,117 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: Menu construction
+
     private func rebuildMenu() {
         let menu = NSMenu()
+        menu.minimumWidth = 300
 
+        // ── Active account header ──
         if let active = accounts.first(where: { $0.isActive }) {
             if !isSwitching {
-                statusItem.button?.title = statusTitle(for: active)
+                setStatusTitleAnimated(statusTitle(for: active))
             }
-            menu.addItem(headerItem("Active: \(active.email) (\(displayPlan(active.plan)))"))
         } else {
             if !isSwitching {
-                statusItem.button?.title = ""
+                setStatusTitleAnimated("")
             }
-            menu.addItem(headerItem(lastError ?? "No active account"))
         }
 
-        menu.addItem(.separator())
-
+        // ── Usage section ──
         if let active = accounts.first(where: { $0.isActive }) {
-            let usageHeader = headerItem("Usage remaining")
-            usageHeader.image = NSImage(systemSymbolName: "gauge.with.dots.needle.bottom.50percent", accessibilityDescription: "Usage remaining")
-            menu.addItem(usageHeader)
-            menu.addItem(usageModeItem(
-                title: "5hr",
+            let usageHeaderItem = NSMenuItem()
+            usageHeaderItem.view = SectionHeaderView(title: "Usage Remaining",
+                                                      symbolName: "chart.bar.fill")
+            menu.addItem(usageHeaderItem)
+
+            let fiveHourHasData = active.fiveHourUsedPercent != nil
+            menu.addItem(usageMenuItem(
+                title: "5-Hour",
                 percent: remainingPercentText(fromUsed: active.fiveHourUsedPercent),
                 reset: resetTimeText(from: active.fiveHourUsage),
+                progress: remainingProgress(fromUsed: active.fiveHourUsedPercent),
+                hasData: fiveHourHasData,
                 mode: .fiveHour
             ))
-            menu.addItem(usageModeItem(
+
+            let weeklyHasData = active.weeklyUsedPercent != nil
+            menu.addItem(usageMenuItem(
                 title: "Weekly",
                 percent: remainingPercentText(fromUsed: active.weeklyUsedPercent),
                 reset: resetDateText(from: active.weeklyUsage),
+                progress: remainingProgress(fromUsed: active.weeklyUsedPercent),
+                hasData: weeklyHasData,
                 mode: .weekly
             ))
             menu.addItem(.separator())
         }
 
+        // ── Accounts section ──
         if accounts.isEmpty {
             let item = NSMenuItem(title: lastError ?? "No accounts available", action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
         } else {
-            menu.addItem(headerItem("Accounts:"))
+            let accountsHeaderItem = NSMenuItem()
+            accountsHeaderItem.view = SectionHeaderView(title: "Accounts",
+                                                         symbolName: "person.2.fill")
+            menu.addItem(accountsHeaderItem)
+
             for account in accounts {
-                let item = NSMenuItem(title: "", action: #selector(switchAccount(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = account.selector
-                item.attributedTitle = accountAttributedTitle(label: displayLabel(for: account), email: account.email)
-                item.state = account.isActive ? .on : .off
-                item.toolTip = "Plan \(account.plan), 5h \(account.fiveHourUsage), weekly \(account.weeklyUsage)"
-                item.isEnabled = !isSwitching
-                menu.addItem(item)
+                let cardItem = NSMenuItem()
+                let view = AccountCardView(
+                    account: account,
+                    label: displayLabel(for: account),
+                    enabled: !isSwitching,
+                    action: { [weak self] in
+                        self?.switchTo(selector: account.selector)
+                    }
+                )
+                cardItem.view = view
+                menu.addItem(cardItem)
             }
         }
 
         menu.addItem(.separator())
 
-        let toggle = NSMenuItem(title: "Toggle Account", action: #selector(toggleAccount), keyEquivalent: "")
-        toggle.target = self
-        toggle.isEnabled = accounts.count == 2 && !isSwitching
-        menu.addItem(toggle)
+        // ── Quick actions ──
+        if accounts.count == 2 {
+            let toggle = NSMenuItem(title: "⇄  Toggle Account", action: #selector(toggleAccount), keyEquivalent: "t")
+            toggle.target = self
+            toggle.isEnabled = !isSwitching
+            menu.addItem(toggle)
+            menu.addItem(.separator())
+        }
 
-        menu.addItem(.separator())
-
-        let addAccount = NSMenuItem(title: "Add Account...", action: #selector(addAccountBrowser), keyEquivalent: "")
+        let addAccount = NSMenuItem(title: "Add Account…", action: #selector(addAccountBrowser), keyEquivalent: "")
         addAccount.target = self
+        addAccount.image = NSImage(systemSymbolName: "plus.circle", accessibilityDescription: "Add")
         addAccount.isEnabled = !isSwitching
         menu.addItem(addAccount)
 
-        let addDevice = NSMenuItem(title: "Add Account with Device Code...", action: #selector(addAccountDeviceCode), keyEquivalent: "")
+        let addDevice = NSMenuItem(title: "Add via Device Code…", action: #selector(addAccountDeviceCode), keyEquivalent: "")
         addDevice.target = self
+        addDevice.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Terminal")
         addDevice.isEnabled = !isSwitching
         addDevice.toolTip = "Opens Terminal so the device code remains visible while login waits."
         menu.addItem(addDevice)
 
         if !accounts.isEmpty {
-            let labelsItem = NSMenuItem(title: "Account Display Labels", action: nil, keyEquivalent: "")
+            menu.addItem(.separator())
+
+            let labelsItem = NSMenuItem(title: "Display Labels", action: nil, keyEquivalent: "")
+            labelsItem.image = NSImage(systemSymbolName: "tag", accessibilityDescription: "Labels")
             let labelsMenu = NSMenu()
             for account in accounts {
-                let setItem = NSMenuItem(title: "Set \(account.selector) (\(account.email))...", action: #selector(setAccountLabel(_:)), keyEquivalent: "")
+                let setItem = NSMenuItem(title: "Set \(account.selector) (\(account.email))…",
+                                         action: #selector(setAccountLabel(_:)), keyEquivalent: "")
                 setItem.target = self
                 setItem.representedObject = account.email
                 labelsMenu.addItem(setItem)
 
-                let clearItem = NSMenuItem(title: "Clear \(account.selector)", action: #selector(clearAccountLabel(_:)), keyEquivalent: "")
+                let clearItem = NSMenuItem(title: "Clear \(account.selector)",
+                                           action: #selector(clearAccountLabel(_:)), keyEquivalent: "")
                 clearItem.target = self
                 clearItem.representedObject = account.email
                 clearItem.isEnabled = customLabel(forEmail: account.email) != nil
@@ -192,9 +717,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(labelsItem)
 
             let removeItem = NSMenuItem(title: "Remove Account", action: nil, keyEquivalent: "")
+            removeItem.image = NSImage(systemSymbolName: "minus.circle", accessibilityDescription: "Remove")
             let removeMenu = NSMenu()
             for account in accounts {
-                let item = NSMenuItem(title: "\(displayLabel(for: account))  \(account.email)", action: #selector(removeAccount(_:)), keyEquivalent: "")
+                let item = NSMenuItem(title: "\(displayLabel(for: account))  \(account.email)",
+                                      action: #selector(removeAccount(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = account.selector
                 item.isEnabled = !isSwitching
@@ -204,80 +731,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(removeItem)
         }
 
+        menu.addItem(.separator())
+
         let refresh = NSMenuItem(title: "Refresh", action: #selector(refreshNow), keyEquivalent: "r")
         refresh.target = self
+        refresh.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh")
         refresh.isEnabled = !isSwitching
         menu.addItem(refresh)
 
-        let quit = NSMenuItem(title: "Quit Account Switcher", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.image = NSImage(systemSymbolName: "power", accessibilityDescription: "Quit")
         menu.addItem(quit)
 
         statusItem.menu = menu
     }
 
-    private func statusTitle(for account: CodexAccount) -> String {
-        switch usageMode {
-        case .fiveHour:
-            return "\(displayLabel(for: account)) · 5hr \(remainingPercentText(fromUsed: account.fiveHourUsedPercent))"
-        case .weekly:
-            return "\(displayLabel(for: account)) · W \(remainingPercentText(fromUsed: account.weeklyUsedPercent))"
+    // MARK: - Smooth status-bar title transition
+
+    private func setStatusTitleAnimated(_ newTitle: String) {
+        guard let button = statusItem.button else { return }
+        guard button.title != newTitle else { return }
+        button.layer?.removeAnimation(forKey: "completionFlash")
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.15
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            button.animator().alphaValue = 0.0
+        }) {
+            button.title = newTitle
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.2
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                button.animator().alphaValue = 1.0
+            })
         }
     }
 
-    private func remainingSummary(for account: CodexAccount) -> String {
+    // MARK: Status title helpers
+
+    private func statusTitle(for account: CodexAccount) -> String {
+        let label = displayLabel(for: account)
         switch usageMode {
         case .fiveHour:
-            return "5h \(remainingPercentText(fromUsed: account.fiveHourUsedPercent)) left"
+            return "\(label) · 5hr \(remainingPercentText(fromUsed: account.fiveHourUsedPercent))"
         case .weekly:
-            return "W \(remainingPercentText(fromUsed: account.weeklyUsedPercent)) left"
+            return "\(label) · W \(remainingPercentText(fromUsed: account.weeklyUsedPercent))"
         }
     }
 
     private func remainingPercentText(fromUsed used: Int?) -> String {
-        guard let used else { return "--%" }
-        return "\(max(0, min(100, used)))%"
+        guard let used else { return "NIL" }
+        return "\(max(0, min(100, 100 - used)))%"
     }
 
-    private func usageModeItem(title: String, percent: String, reset: String, mode: UsageDisplayMode) -> NSMenuItem {
-        let item = NSMenuItem(title: "", action: #selector(setUsageMode(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = mode.rawValue
-        item.state = usageMode == mode ? .on : .off
-        item.attributedTitle = usageAttributedTitle(title: title, percent: percent, reset: reset)
+    private func remainingProgress(fromUsed used: Int?) -> CGFloat {
+        guard let used else { return 0 }
+        return CGFloat(max(0, min(100, 100 - used))) / 100.0
+    }
+
+    // MARK: - Usage menu items
+
+    private func usageMenuItem(title: String, percent: String, reset: String,
+                               progress: CGFloat, hasData: Bool,
+                               mode: UsageDisplayMode) -> NSMenuItem {
+        let item = NSMenuItem()
+        let view = GlassUsageBarView(
+            title: title,
+            percent: percent,
+            resetText: reset,
+            progress: progress,
+            isSelected: usageMode == mode,
+            hasData: hasData,
+            action: { [weak self] in
+                self?.usageMode = mode
+                self?.rebuildMenu()
+            }
+        )
+        item.view = view
         return item
     }
 
-    private func usageAttributedTitle(title: String, percent: String, reset: String) -> NSAttributedString {
-        attributedColumns(
-            "\(title)\t\(percent)\t\(reset)",
-            tabs: [112, 162],
-            font: NSFont.menuFont(ofSize: 0),
-            color: .labelColor
-        )
-    }
-
-    private func accountAttributedTitle(label: String, email: String) -> NSAttributedString {
-        attributedColumns(
-            "\(limitedLabel(label))\t\(email)",
-            tabs: [86],
-            font: NSFont.menuFont(ofSize: 0),
-            color: .labelColor
-        )
-    }
-
-    private func attributedColumns(_ text: String, tabs: [CGFloat], font: NSFont, color: NSColor) -> NSAttributedString {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.tabStops = tabs.map { NSTextTab(textAlignment: .left, location: $0) }
-        paragraph.defaultTabInterval = 48
-        return NSAttributedString(
-            string: text,
-            attributes: [
-                .font: font,
-                .foregroundColor: color,
-                .paragraphStyle: paragraph
-            ]
-        )
-    }
+    // MARK: Reset-time formatting
 
     private func resetTimeText(from usage: String) -> String {
         let inner = parenthesizedValue(from: usage)
@@ -334,26 +867,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return String(usage[usage.index(after: open)..<close])
     }
 
-    private func headerItem(_ title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        return item
-    }
+    // MARK: - Actions
 
     @objc private func refreshNow() {
         refreshAccounts()
-    }
-
-    @objc private func setFiveHourMode() {
-        usageMode = .fiveHour
-        rebuildMenu()
-    }
-
-    @objc private func setUsageMode(_ sender: NSMenuItem) {
-        guard let rawValue = sender.representedObject as? String,
-              let mode = UsageDisplayMode(rawValue: rawValue) else { return }
-        usageMode = mode
-        rebuildMenu()
     }
 
     @objc private func addAccountBrowser() {
@@ -377,11 +894,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             self?.refreshAccounts()
         }
-    }
-
-    @objc private func setWeeklyMode() {
-        usageMode = .weekly
-        rebuildMenu()
     }
 
     @objc private func setAccountLabel(_ sender: NSMenuItem) {
@@ -427,13 +939,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Cancel")
 
         if alert.runModal() == .alertFirstButtonReturn {
-            runAccountMaintenance(title: "Removing account", args: ["remove", selector])
+            // codex-auth 0.2.x matches by email/alias, not row-number selector
+            runAccountMaintenance(title: "Removing account", args: ["remove", account.email])
         }
     }
 
     @objc private func toggleAccount() {
         guard accounts.count == 2, let inactive = accounts.first(where: { !$0.isActive }) else {
-            showAlert(title: "Cannot toggle", message: "Toggle requires exactly two saved accounts and one active account.")
+            showAlert(title: "Cannot toggle",
+                      message: "Toggle requires exactly two saved accounts and one active account.")
             return
         }
         switchTo(selector: inactive.selector)
@@ -444,6 +958,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switchTo(selector: selector)
     }
 
+    // MARK: - Account switching
+
     private func switchTo(selector: String) {
         guard !isSwitching else { return }
         let target = accounts.first(where: { $0.selector == selector })
@@ -451,7 +967,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         beginSwitchAnimation(label: target.map(displayLabel(for:)) ?? selector)
         rebuildMenu()
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+
             if let syncError = self.syncActiveAuthSnapshot() {
                 DispatchQueue.main.async {
                     self.isSwitching = false
@@ -462,7 +980,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            let switchResult = self.runCodexAuth(["switch", selector])
+            // codex-auth 0.2.x matches by email/alias, not row-number selector
+            let switchResult = self.runCodexAuth(["switch", target?.email ?? selector])
             if switchResult.status != 0 {
                 DispatchQueue.main.async {
                     self.isSwitching = false
@@ -485,16 +1004,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Switch animation (spinner + pulse)
+
     private func beginSwitchAnimation(label: String) {
         switchAnimationTimer?.invalidate()
         switchAnimationFrame = 0
         switchingTitle = "\(limitedLabel(label)) · switching"
         updateSwitchAnimationTitle()
-        switchAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+
+        let timer = Timer(timeInterval: 0.08, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.switchAnimationFrame += 1
             self.updateSwitchAnimationTitle()
         }
+        RunLoop.current.add(timer, forMode: .common)
+        switchAnimationTimer = timer
+
+        beginPulseAnimation()
     }
 
     private func updateSwitchAnimationTitle() {
@@ -502,10 +1028,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.title = "\(switchingTitle) \(frame)"
     }
 
+    private func beginPulseAnimation() {
+        guard let layer = statusItem.button?.layer else { return }
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 1.0
+        pulse.toValue = 0.35
+        pulse.duration = 0.7
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(pulse, forKey: "switchPulse")
+    }
+
     private func endSwitchAnimation() {
         switchAnimationTimer?.invalidate()
         switchAnimationTimer = nil
+        endPulseAnimation()
     }
+
+    private func endPulseAnimation() {
+        guard let button = statusItem.button, let layer = button.layer else { return }
+        layer.removeAnimation(forKey: "switchPulse")
+        button.alphaValue = 1.0
+
+        let flash = CABasicAnimation(keyPath: "opacity")
+        flash.fromValue = 0.4
+        flash.toValue = 1.0
+        flash.duration = 0.3
+        flash.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(flash, forKey: "completionFlash")
+    }
+
+    // MARK: - Auth snapshot sync
 
     private func syncActiveAuthSnapshot() -> String? {
         let home = NSHomeDirectory()
@@ -539,13 +1093,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Account maintenance
+
     private func runAccountMaintenance(title: String, args: [String], restartAfterSuccess: Bool = false) {
         guard !isSwitching else { return }
         isSwitching = true
         statusItem.button?.title = title
         rebuildMenu()
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
             let result = self.runCodexAuth(args)
             var restartResult: CommandResult?
             if result.status == 0, restartAfterSuccess {
@@ -562,6 +1119,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
+    // MARK: - App restart
 
     private func restartCodexApp() -> CommandResult {
         var transcript: [String] = []
@@ -586,7 +1145,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             transcript.append("codex-auth app failed; falling back to open -a Codex.")
             let openResult = run("/usr/bin/open", ["-a", "Codex"])
             if openResult.status != 0 {
-                return CommandResult(status: openResult.status, output: transcript.joined(separator: "\n") + "\n" + openResult.output)
+                return CommandResult(status: openResult.status,
+                                    output: transcript.joined(separator: "\n") + "\n" + openResult.output)
             }
         }
 
@@ -601,13 +1161,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func codexAppPIDs() -> [String] {
+        let myPID = String(ProcessInfo.processInfo.processIdentifier)
         let result = run("/usr/bin/pgrep", ["-f", "/Applications/Codex\\.app/Contents/"])
         guard result.status == 0 else { return [] }
         return result.output
             .split(whereSeparator: \.isNewline)
             .map(String.init)
-            .filter { !$0.isEmpty }
+            .filter { !$0.isEmpty && $0 != myPID }
     }
+
+    // MARK: - Parsing
 
     private func parseAccounts(_ output: String) -> [CodexAccount] {
         output.split(whereSeparator: \.isNewline).compactMap { rawLine in
@@ -675,6 +1238,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return digits.isEmpty ? nil : Int(digits)
     }
 
+    // MARK: - External process helpers
+
     private func runCodexAuth(_ args: [String]) -> CommandResult {
         guard let path = codexAuthPath() else {
             return CommandResult(status: 127, output: "codex-auth was not found in known locations.")
@@ -686,7 +1251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let home = NSHomeDirectory()
         let nvmNodeDir = URL(fileURLWithPath: "\(home)/.nvm/versions/node")
         if let versions = try? FileManager.default.contentsOfDirectory(at: nvmNodeDir, includingPropertiesForKeys: nil) {
-            for versionDir in versions {
+            for versionDir in versions.sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
                 let path = versionDir.appendingPathComponent("bin/codex-auth").path
                 if FileManager.default.isExecutableFile(atPath: path) {
                     return path
@@ -704,14 +1269,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return path
         }
 
-        // Fallback using interactive zsh shell to check user's environment path
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-l", "-c", "which codex-auth"]
         process.standardOutput = pipe
         process.standardError = Pipe()
-        
+
         do {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -752,6 +1316,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - UI helpers
+
     private func showAlert(title: String, message: String) {
         let alert = NSAlert()
         alert.messageText = title
@@ -772,6 +1338,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let first = plan.first else { return plan }
         return first.uppercased() + plan.dropFirst().lowercased()
     }
+
+    // MARK: - Custom labels (UserDefaults)
 
     private func customLabel(forEmail email: String) -> String? {
         accountLabels()[email]
@@ -797,6 +1365,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
+
+// MARK: - Entry Point
 
 let app = NSApplication.shared
 let delegate = AppDelegate()
