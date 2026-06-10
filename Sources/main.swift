@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import QuartzCore
+import UserNotifications
 
 // MARK: - Data Models
 
@@ -14,6 +15,11 @@ struct CodexAccount {
     let weeklyUsedPercent: Int?
     let lastActivity: String
     let isActive: Bool
+
+    var isExpired: Bool {
+        return fiveHourUsage.contains("token_invalidated") || fiveHourUsage.contains("401") ||
+               weeklyUsage.contains("token_invalidated") || weeklyUsage.contains("401")
+    }
 }
 
 enum UsageDisplayMode: String {
@@ -110,15 +116,17 @@ final class AccountCardView: NSView {
     private let account: CodexAccount
     private let label: String
     private let enabled: Bool
+    private let isExpired: Bool
     var onSelect: (() -> Void)?
 
     private var isHighlighted = false
     private var trackingArea: NSTrackingArea?
 
-    init(account: CodexAccount, label: String, enabled: Bool, action: (() -> Void)?) {
+    init(account: CodexAccount, label: String, enabled: Bool, isExpired: Bool, action: (() -> Void)?) {
         self.account = account
         self.label = label
         self.enabled = enabled
+        self.isExpired = isExpired
         self.onSelect = action
         super.init(frame: NSRect(x: 0, y: 0, width: 300, height: 48))
     }
@@ -210,7 +218,26 @@ final class AccountCardView: NSView {
         detailStr.draw(at: NSPoint(x: textX, y: bounds.height - 34))
 
         // ── Right side: active badge or label ──
-        if account.isActive {
+        if isExpired {
+            // Red "⚠️ Re-login" pill
+            let pillText = "⚠️ Re-login"
+            let pillFont = NSFont.systemFont(ofSize: 9, weight: .bold)
+            let pillAttrs: [NSAttributedString.Key: Any] = [
+                .font: pillFont,
+                .foregroundColor: NSColor.white
+            ]
+            let pillStr = NSAttributedString(string: pillText, attributes: pillAttrs)
+            let pillSize = pillStr.size()
+            let pillW = pillSize.width + 12
+            let pillH: CGFloat = 18
+            let pillRect = NSRect(x: bounds.width - hPad - pillW,
+                                  y: (bounds.height - pillH) / 2,
+                                  width: pillW, height: pillH)
+            NSColor.systemRed.setFill()
+            NSBezierPath(roundedRect: pillRect, xRadius: pillH / 2, yRadius: pillH / 2).fill()
+            pillStr.draw(at: NSPoint(x: pillRect.midX - pillSize.width / 2,
+                                     y: pillRect.midY - pillSize.height / 2))
+        } else if account.isActive {
             // Green "Active" pill
             let pillText = "Active"
             let pillFont = NSFont.systemFont(ofSize: 9, weight: .semibold)
@@ -526,7 +553,7 @@ final class SectionHeaderView: NSView {
 
 // MARK: - App Delegate
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let refreshInterval: TimeInterval = 5
@@ -537,6 +564,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isSwitching = false
     private var switchAnimationTimer: Timer?
     private var switchAnimationFrame = 0
+    private var previousAccounts: [String: CodexAccount] = [:]
+    private var notifiedExpiredEmails: Set<String> = []
+    private var lastSuggestedEmail: String?
+    private var vibeAnimationTimer: Timer?
+    private var vibeAnimationFrame = 0
     private var switchingTitle = "Switching"
     private let switchAnimationFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     private var usageMode: UsageDisplayMode {
@@ -553,6 +585,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         configureStatusButton()
+        
+        UNUserNotificationCenter.current().delegate = self
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+            if let error = error {
+                print("Notification authorization failed: \(error)")
+            }
+        }
+        
         refreshAccounts()
         let timer = Timer(timeInterval: refreshInterval, repeats: true) { [weak self] _ in
             self?.refreshAccounts()
@@ -584,10 +624,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 result = self.runCodexAuth(["list"])
             }
             let parsed = result.status == 0 ? self.parseAccounts(result.output) : []
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
                 if result.status == 0 {
+                    let oldAccounts = self.accounts
                     self.accounts = parsed
                     self.lastError = parsed.isEmpty ? "No codex-auth accounts found." : nil
+                    self.processAccountUpdates(old: oldAccounts, new: parsed)
                 } else {
                     self.accounts = []
                     self.lastError = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -605,11 +648,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // ── Active account header ──
         if let active = accounts.first(where: { $0.isActive }) {
-            if !isSwitching {
+            if !isSwitching, vibeAnimationTimer == nil {
                 setStatusTitleAnimated(statusTitle(for: active))
             }
         } else {
-            if !isSwitching {
+            if !isSwitching, vibeAnimationTimer == nil {
                 setStatusTitleAnimated("")
             }
         }
@@ -641,6 +684,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 mode: .weekly
             ))
             menu.addItem(.separator())
+            
+            // Suggestion Banner
+            if let activeUsed = active.fiveHourUsedPercent, activeUsed >= 90 {
+                let candidates = accounts.filter { !$0.isActive && !$0.isExpired }
+                if let best = candidates.max(by: { score(for: $0) < score(for: $1) }) {
+                    let bestScore = score(for: best)
+                    let bestUsed = best.fiveHourUsedPercent ?? 100
+                    if bestScore > -900 && bestUsed < 90 {
+                        let suggestHeaderItem = NSMenuItem()
+                        suggestHeaderItem.view = SectionHeaderView(title: "Smart Recommendation", symbolName: "sparkles")
+                        menu.addItem(suggestHeaderItem)
+                        
+                        let suggestItem = NSMenuItem()
+                        let bestLabel = displayLabel(for: best)
+                        let remaining = 100 - bestUsed
+                        suggestItem.title = "✨ Switch to \(bestLabel) (\(remaining)% remaining)"
+                        suggestItem.representedObject = best.selector
+                        suggestItem.action = #selector(switchAccount(_:))
+                        suggestItem.target = self
+                        menu.addItem(suggestItem)
+                        menu.addItem(.separator())
+                    }
+                }
+            }
         }
 
         // ── Accounts section ──
@@ -656,12 +723,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             for account in accounts {
                 let cardItem = NSMenuItem()
+                let expired = account.isExpired
                 let view = AccountCardView(
                     account: account,
                     label: displayLabel(for: account),
                     enabled: !isSwitching,
+                    isExpired: expired,
                     action: { [weak self] in
-                        self?.switchTo(selector: account.selector)
+                        if expired {
+                            self?.promptRelogin(for: account)
+                        } else {
+                            self?.switchTo(selector: account.selector)
+                        }
                     }
                 )
                 cardItem.view = view
@@ -1235,7 +1308,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private static func firstPercent(in token: String) -> Int? {
         let digits = token.prefix { $0.isNumber }
-        return digits.isEmpty ? nil : Int(digits)
+        guard !digits.isEmpty, let val = Int(digits), val <= 100 else { return nil }
+        return val
     }
 
     // MARK: - External process helpers
@@ -1299,9 +1373,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         process.standardOutput = pipe
         process.standardError = pipe
         var environment = ProcessInfo.processInfo.environment
-        let bundledNode = "/Applications/Codex.app/Contents/Resources/node"
-        if FileManager.default.isExecutableFile(atPath: bundledNode) {
-            environment["CODEX_AUTH_NODE_EXECUTABLE"] = bundledNode
+        if let brewNode = nodeExecutablePath() {
+            environment["CODEX_AUTH_NODE_EXECUTABLE"] = brewNode
+        } else {
+            let bundledNode = "/Applications/Codex.app/Contents/Resources/node"
+            if FileManager.default.isExecutableFile(atPath: bundledNode) {
+                environment["CODEX_AUTH_NODE_EXECUTABLE"] = bundledNode
+            }
         }
         process.environment = environment
 
@@ -1363,6 +1441,216 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func shellEscaped(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    // MARK: - Node.js Resolution
+
+    private func nodeExecutablePath() -> String? {
+        let paths = [
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node"
+        ]
+        for path in paths {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Notifications and Scoring
+
+    private func sendNotification(title: String, body: String, action: String? = nil, targetEmail: String? = nil) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = UNNotificationSound.default
+        if let action = action, let targetEmail = targetEmail {
+            content.userInfo = ["action": action, "targetEmail": targetEmail]
+        }
+        
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                print("Failed to deliver notification: \(error)")
+            }
+        }
+    }
+
+    private func score(for account: CodexAccount) -> Double {
+        if account.isExpired { return -999.0 }
+        if account.plan.uppercased() == "API_KEY" {
+            return 50.0
+        }
+        let fiveHourRemaining = Double(100 - (account.fiveHourUsedPercent ?? 0))
+        let weeklyRemaining = Double(100 - (account.weeklyUsedPercent ?? 0))
+        return fiveHourRemaining * 0.7 + weeklyRemaining * 0.3
+    }
+
+    private func processAccountUpdates(old: [CodexAccount], new: [CodexAccount]) {
+        let isFirstLoad = previousAccounts.isEmpty
+        
+        if isFirstLoad {
+            for acc in new {
+                previousAccounts[acc.email] = acc
+            }
+            return
+        }
+        
+        for account in new {
+            if let prev = previousAccounts[account.email] {
+                if let prev5H = prev.fiveHourUsedPercent, let new5H = account.fiveHourUsedPercent {
+                    if prev5H > 0 && new5H == 0 {
+                        self.sendNotification(
+                            title: "Usage Limit Refreshed ⚡️",
+                            body: "Account \(account.email) usage limit is back. Start vibing!"
+                        )
+                        self.startVibingAnimation(label: self.displayLabel(for: account), type: "5H")
+                    }
+                }
+                
+                if let prevW = prev.weeklyUsedPercent, let newW = account.weeklyUsedPercent {
+                    if prevW > 0 && newW == 0 {
+                        self.sendNotification(
+                            title: "Weekly Limit Restored 🌟",
+                            body: "The weekly usage limit for \(account.email) has been restored."
+                        )
+                        self.startVibingAnimation(label: self.displayLabel(for: account), type: "Weekly")
+                    }
+                }
+            }
+            
+            if account.isExpired {
+                if !self.notifiedExpiredEmails.contains(account.email) {
+                    self.sendNotification(
+                        title: "Authentication Expired ⚠️",
+                        body: "Please re-login for \(account.email).",
+                        action: "relogin",
+                        targetEmail: account.email
+                    )
+                    self.notifiedExpiredEmails.insert(account.email)
+                }
+            } else {
+                self.notifiedExpiredEmails.remove(account.email)
+            }
+            
+            previousAccounts[account.email] = account
+        }
+        
+        if let active = new.first(where: { $0.isActive }),
+           let activeUsed = active.fiveHourUsedPercent,
+           activeUsed >= 90 {
+            let candidates = new.filter { !$0.isActive && !$0.isExpired }
+            if let best = candidates.max(by: { score(for: $0) < score(for: $1) }) {
+                let bestScore = score(for: best)
+                let bestUsed = best.fiveHourUsedPercent ?? 100
+                if bestScore > -900 && bestUsed < 90 {
+                    let bestLabel = displayLabel(for: best)
+                    if lastSuggestedEmail != best.email {
+                        self.sendNotification(
+                            title: "Low Usage Limit (<10%) ⚡️",
+                            body: "Change to \(bestLabel) so that you'll be able to continue vibing.",
+                            action: "switch",
+                            targetEmail: best.email
+                        )
+                        lastSuggestedEmail = best.email
+                    }
+                }
+            }
+        } else {
+            lastSuggestedEmail = nil
+        }
+    }
+
+    private func startVibingAnimation(label: String, type: String) {
+        vibeAnimationTimer?.invalidate()
+        vibeAnimationFrame = 0
+        
+        let frames: [String]
+        if type == "5H" {
+            frames = ["🎧 \(label) 🎧", "✨ \(label) ✨", "⚡️ \(label) ⚡️", "🕺 \(label) 🕺"]
+        } else {
+            frames = ["🌟 \(label) 🌟", "🎉 \(label) 🎉", "🎈 \(label) 🎈", "🧸 \(label) 🧸"]
+        }
+        
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] t in
+            guard let self = self else { t.invalidate(); return }
+            self.vibeAnimationFrame += 1
+            if self.vibeAnimationFrame > 24 {
+                t.invalidate()
+                self.vibeAnimationTimer = nil
+                if let active = self.accounts.first(where: { $0.isActive }) {
+                    self.setStatusTitleAnimated(self.statusTitle(for: active))
+                } else {
+                    self.setStatusTitleAnimated("")
+                }
+                return
+            }
+            let frame = frames[self.vibeAnimationFrame % frames.count]
+            self.statusItem.button?.title = frame
+        }
+        RunLoop.current.add(timer, forMode: .common)
+        vibeAnimationTimer = timer
+    }
+
+    private func promptRelogin(for account: CodexAccount) {
+        let alert = NSAlert()
+        alert.messageText = "Authentication Expired"
+        alert.informativeText = "The authentication for \(account.email) has expired. Would you like to re-login cleanly?"
+        alert.addButton(withTitle: "Re-login")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        if alert.runModal() == .alertFirstButtonReturn {
+            reloginAccount(account.email)
+        }
+    }
+
+    private func reloginAccount(_ email: String) {
+        let path = codexAuthPath() ?? "codex-auth"
+        let home = NSHomeDirectory()
+        let restartPath = "\(home)/.codex/skills/codex-account-switcher/scripts/codex_account_switch.sh"
+        let script = """
+        tell application "Terminal"
+          activate
+          do script "echo 'Re-logging in for \(email)...'; \(shellEscaped(path)) login --device-auth && \(shellEscaped(restartPath)) restart-app; echo; echo 'Codex account login finished and Codex App was relaunched. You can close this window.'"
+        end tell
+        """
+        let result = run("/usr/bin/osascript", ["-e", script])
+        if result.status != 0 {
+            showAlert(title: "Re-login failed", message: result.output)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.refreshAccounts()
+        }
+    }
+
+    // MARK: - UNUserNotificationCenterDelegate
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let userInfo = response.notification.request.content.userInfo
+        if let action = userInfo["action"] as? String {
+            if action == "switch", let email = userInfo["targetEmail"] as? String {
+                DispatchQueue.main.async { [weak self] in
+                    if let account = self?.accounts.first(where: { $0.email == email }) {
+                        self?.switchTo(selector: account.selector)
+                    }
+                }
+            } else if action == "relogin", let email = userInfo["targetEmail"] as? String {
+                DispatchQueue.main.async { [weak self] in
+                    self?.reloginAccount(email)
+                }
+            }
+        }
+        completionHandler()
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
     }
 }
 
