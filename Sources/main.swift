@@ -11,8 +11,8 @@ struct CodexAccount {
     let plan: String
     let fiveHourUsage: String
     let weeklyUsage: String
-    let fiveHourUsedPercent: Int?
-    let weeklyUsedPercent: Int?
+    let fiveHourRemainingPercent: Int?
+    let weeklyRemainingPercent: Int?
     let lastActivity: String
     let isActive: Bool
 
@@ -593,7 +593,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
         
-        refreshAccounts()
+        refreshAccounts(forceAPI: true)
         let timer = Timer(timeInterval: refreshInterval, repeats: true) { [weak self] _ in
             self?.refreshAccounts()
         }
@@ -612,16 +612,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     // MARK: Data refresh
 
-    private func refreshAccounts() {
+    private func refreshAccounts(forceAPI: Bool = false) {
         guard !isSwitching else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             // codex-auth 0.2.x does not support `list --active`; use `--skip-api`
             // as the primary flag (fast, suitable for the 5s poll). The active row
             // is still marked with `*`, which parseAccounts relies on.
-            var result = self.runCodexAuth(["list", "--skip-api"])
-            if result.status != 0 {
-                result = self.runCodexAuth(["list"])
+            var result: CommandResult
+            if forceAPI {
+                result = self.runCodexAuth(["list", "--active"])
+                if result.status != 0 {
+                    result = self.runCodexAuth(["list"])
+                }
+            } else {
+                result = self.runCodexAuth(["list", "--skip-api"])
+                if result.status != 0 {
+                    result = self.runCodexAuth(["list"])
+                }
             }
             let parsed = result.status == 0 ? self.parseAccounts(result.output) : []
             DispatchQueue.main.async { [weak self] in
@@ -664,42 +672,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                                                       symbolName: "chart.bar.fill")
             menu.addItem(usageHeaderItem)
 
-            let fiveHourHasData = active.fiveHourUsedPercent != nil
+            let fiveHourHasData = active.fiveHourRemainingPercent != nil
             menu.addItem(usageMenuItem(
                 title: "5-Hour",
-                percent: remainingPercentText(fromUsed: active.fiveHourUsedPercent),
+                percent: remainingPercentText(fromRemaining: active.fiveHourRemainingPercent),
                 reset: resetTimeText(from: active.fiveHourUsage),
-                progress: remainingProgress(fromUsed: active.fiveHourUsedPercent),
+                progress: remainingProgress(fromRemaining: active.fiveHourRemainingPercent),
                 hasData: fiveHourHasData,
                 mode: .fiveHour
             ))
 
-            let weeklyHasData = active.weeklyUsedPercent != nil
+            let weeklyHasData = active.weeklyRemainingPercent != nil
             menu.addItem(usageMenuItem(
                 title: "Weekly",
-                percent: remainingPercentText(fromUsed: active.weeklyUsedPercent),
+                percent: remainingPercentText(fromRemaining: active.weeklyRemainingPercent),
                 reset: resetDateText(from: active.weeklyUsage),
-                progress: remainingProgress(fromUsed: active.weeklyUsedPercent),
+                progress: remainingProgress(fromRemaining: active.weeklyRemainingPercent),
                 hasData: weeklyHasData,
                 mode: .weekly
             ))
             menu.addItem(.separator())
             
             // Suggestion Banner
-            if let activeUsed = active.fiveHourUsedPercent, activeUsed >= 90 {
+            if let activeRemaining = active.fiveHourRemainingPercent, activeRemaining <= 10 {
                 let candidates = accounts.filter { !$0.isActive && !$0.isExpired }
                 if let best = candidates.max(by: { score(for: $0) < score(for: $1) }) {
                     let bestScore = score(for: best)
-                    let bestUsed = best.fiveHourUsedPercent ?? 100
-                    if bestScore > -900 && bestUsed < 90 {
+                    let bestRemaining = best.fiveHourRemainingPercent ?? 0
+                    if bestScore > -900 && bestRemaining > 10 {
                         let suggestHeaderItem = NSMenuItem()
                         suggestHeaderItem.view = SectionHeaderView(title: "Smart Recommendation", symbolName: "sparkles")
                         menu.addItem(suggestHeaderItem)
                         
                         let suggestItem = NSMenuItem()
                         let bestLabel = displayLabel(for: best)
-                        let remaining = 100 - bestUsed
-                        suggestItem.title = "✨ Switch to \(bestLabel) (\(remaining)% remaining)"
+                        suggestItem.title = "✨ Switch to \(bestLabel) (\(bestRemaining)% remaining)"
                         suggestItem.representedObject = best.selector
                         suggestItem.action = #selector(switchAccount(_:))
                         suggestItem.target = self
@@ -845,20 +852,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let label = displayLabel(for: account)
         switch usageMode {
         case .fiveHour:
-            return "\(label) · 5hr \(remainingPercentText(fromUsed: account.fiveHourUsedPercent))"
+            return "\(label) · 5hr \(remainingPercentText(fromRemaining: account.fiveHourRemainingPercent))"
         case .weekly:
-            return "\(label) · W \(remainingPercentText(fromUsed: account.weeklyUsedPercent))"
+            return "\(label) · W \(remainingPercentText(fromRemaining: account.weeklyRemainingPercent))"
         }
     }
 
-    private func remainingPercentText(fromUsed used: Int?) -> String {
-        guard let used else { return "NIL" }
-        return "\(max(0, min(100, 100 - used)))%"
+    private func remainingPercentText(fromRemaining remaining: Int?) -> String {
+        guard let remaining else { return "NIL" }
+        return "\(max(0, min(100, remaining)))%"
     }
 
-    private func remainingProgress(fromUsed used: Int?) -> CGFloat {
-        guard let used else { return 0 }
-        return CGFloat(max(0, min(100, 100 - used))) / 100.0
+    private func remainingProgress(fromRemaining remaining: Int?) -> CGFloat {
+        guard let remaining else { return 0 }
+        return CGFloat(max(0, min(100, remaining))) / 100.0
     }
 
     // MARK: - Usage menu items
@@ -943,7 +950,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // MARK: - Actions
 
     @objc private func refreshNow() {
-        refreshAccounts()
+        refreshAccounts(forceAPI: true)
     }
 
     @objc private func addAccountBrowser() {
@@ -1272,15 +1279,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 plan: plan,
                 fiveHourUsage: fiveHour.text,
                 weeklyUsage: weekly.text,
-                fiveHourUsedPercent: fiveHour.usedPercent,
-                weeklyUsedPercent: weekly.usedPercent,
+                fiveHourRemainingPercent: fiveHour.remainingPercent,
+                weeklyRemainingPercent: weekly.remainingPercent,
                 lastActivity: lastActivity.isEmpty ? "-" : lastActivity,
                 isActive: isActive
             )
         }
     }
 
-    private static func parseUsage(_ tokens: [String], from startIndex: Int) -> (text: String, usedPercent: Int?, nextIndex: Int) {
+    private static func parseUsage(_ tokens: [String], from startIndex: Int) -> (text: String, remainingPercent: Int?, nextIndex: Int) {
         guard startIndex < tokens.count else {
             return ("-", nil, startIndex)
         }
@@ -1483,8 +1490,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if account.plan.uppercased() == "API_KEY" {
             return 50.0
         }
-        let fiveHourRemaining = Double(100 - (account.fiveHourUsedPercent ?? 0))
-        let weeklyRemaining = Double(100 - (account.weeklyUsedPercent ?? 0))
+        let fiveHourRemaining = Double(account.fiveHourRemainingPercent ?? 0)
+        let weeklyRemaining = Double(account.weeklyRemainingPercent ?? 0)
         return fiveHourRemaining * 0.7 + weeklyRemaining * 0.3
     }
 
@@ -1500,8 +1507,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         
         for account in new {
             if let prev = previousAccounts[account.email] {
-                if let prev5H = prev.fiveHourUsedPercent, let new5H = account.fiveHourUsedPercent {
-                    if prev5H > 0 && new5H == 0 {
+                if let prev5H = prev.fiveHourRemainingPercent, let new5H = account.fiveHourRemainingPercent {
+                    if prev5H < 100 && new5H == 100 {
                         self.sendNotification(
                             title: "Usage Limit Refreshed ⚡️",
                             body: "Account \(account.email) usage limit is back. Start vibing!"
@@ -1510,8 +1517,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     }
                 }
                 
-                if let prevW = prev.weeklyUsedPercent, let newW = account.weeklyUsedPercent {
-                    if prevW > 0 && newW == 0 {
+                if let prevW = prev.weeklyRemainingPercent, let newW = account.weeklyRemainingPercent {
+                    if prevW < 100 && newW == 100 {
                         self.sendNotification(
                             title: "Weekly Limit Restored 🌟",
                             body: "The weekly usage limit for \(account.email) has been restored."
@@ -1539,13 +1546,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         
         if let active = new.first(where: { $0.isActive }),
-           let activeUsed = active.fiveHourUsedPercent,
-           activeUsed >= 90 {
+           let activeRemaining = active.fiveHourRemainingPercent,
+           activeRemaining <= 10 {
             let candidates = new.filter { !$0.isActive && !$0.isExpired }
             if let best = candidates.max(by: { score(for: $0) < score(for: $1) }) {
                 let bestScore = score(for: best)
-                let bestUsed = best.fiveHourUsedPercent ?? 100
-                if bestScore > -900 && bestUsed < 90 {
+                let bestRemaining = best.fiveHourRemainingPercent ?? 0
+                if bestScore > -900 && bestRemaining > 10 {
                     let bestLabel = displayLabel(for: best)
                     if lastSuggestedEmail != best.email {
                         self.sendNotification(
