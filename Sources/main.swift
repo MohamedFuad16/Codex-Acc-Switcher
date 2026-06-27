@@ -17,8 +17,43 @@ struct CodexAccount {
     let isActive: Bool
 
     var isExpired: Bool {
-        return fiveHourUsage.contains("token_invalidated") || fiveHourUsage.contains("401") ||
-               weeklyUsage.contains("token_invalidated") || weeklyUsage.contains("401")
+        let planText = plan.lowercased()
+        let usageText = "\(fiveHourUsage) \(weeklyUsage)".lowercased()
+        let deadMarkers = ["token_invalidated", "unauthorized", "invalid", "expired", "401"]
+        return planText == "unknown" || deadMarkers.contains { usageText.contains($0) }
+    }
+
+    var isAPIKeyAccount: Bool {
+        let normalizedPlan = plan.uppercased().filter(\.isLetter)
+        let normalizedEmail = email.lowercased()
+        return normalizedPlan == "APIKEY" ||
+        normalizedEmail.hasPrefix("sk-") ||
+        normalizedEmail.contains("(api_key)")
+    }
+
+    var hasComparableUsageCaps: Bool {
+        !isAPIKeyAccount &&
+        fiveHourRemainingPercent != nil &&
+        weeklyRemainingPercent != nil
+    }
+
+    var lowestRemainingPercent: Int? {
+        guard let fiveHourRemainingPercent, let weeklyRemainingPercent else { return nil }
+        return min(fiveHourRemainingPercent, weeklyRemainingPercent)
+    }
+
+    func withActive(_ active: Bool) -> CodexAccount {
+        CodexAccount(
+            selector: selector,
+            email: email,
+            plan: plan,
+            fiveHourUsage: fiveHourUsage,
+            weeklyUsage: weeklyUsage,
+            fiveHourRemainingPercent: fiveHourRemainingPercent,
+            weeklyRemainingPercent: weeklyRemainingPercent,
+            lastActivity: lastActivity,
+            isActive: active
+        )
     }
 }
 
@@ -27,9 +62,52 @@ enum UsageDisplayMode: String {
     case weekly
 }
 
+enum StatusAnimationStyle: String, CaseIterable {
+    case spark
+    case orbit
+    case pulse
+    case wave
+    case bars
+    case arrows
+
+    var title: String {
+        switch self {
+        case .spark: return "Spark"
+        case .orbit: return "Orbit"
+        case .pulse: return "Pulse"
+        case .wave: return "Wave"
+        case .bars: return "Bars"
+        case .arrows: return "Arrows"
+        }
+    }
+}
+
 struct CommandResult {
     let status: Int32
     let output: String
+}
+
+struct HandoffAccountState: Codable {
+    let email: String
+    let label: String
+    let plan: String
+    let fiveHourRemainingPercent: Int?
+    let weeklyRemainingPercent: Int?
+    let isActive: Bool
+}
+
+struct HandoffState: Codable {
+    let updatedAt: Date
+    let reason: String
+    let sourceThreadID: String?
+    let previousEmail: String?
+    let targetEmail: String?
+    let activeEmail: String?
+    let activeLowestRemainingPercent: Int?
+    let recommendedEmail: String?
+    let recommendedLowestRemainingPercent: Int?
+    let accounts: [HandoffAccountState]
+    let continuationPrompt: String
 }
 
 // MARK: - Menu Bar Icon Generator
@@ -319,7 +397,7 @@ final class GlassUsageBarView: NSView {
     private var trackingArea: NSTrackingArea?
     private var animationTimer: Timer?
     private var animationStart: CFTimeInterval = 0
-    private let animationDuration: CFTimeInterval = 0.45
+    private let animationDuration: CFTimeInterval = 0.75
 
     init(title: String, percent: String, resetText: String,
          progress: CGFloat, isSelected: Bool, hasData: Bool, action: (() -> Void)?) {
@@ -399,7 +477,7 @@ final class GlassUsageBarView: NSView {
         let hPad: CGFloat = 20
         let textY: CGFloat = 26
         let barY: CGFloat = 8
-        let barH: CGFloat = 5
+        let barH: CGFloat = 7
         let innerWidth = bounds.width - hPad * 2
 
         // Hover highlight
@@ -441,10 +519,10 @@ final class GlassUsageBarView: NSView {
             resetStr.draw(at: NSPoint(x: resetX, y: textY + 2))
         }
 
-        // Percentage (colour-coded)
-        let pColor = hasData ? progressColor(for: displayProgress) : NSColor.tertiaryLabelColor
+        // Percentage: keep this dark for readability over the glass menu material.
+        let pColor = hasData ? NSColor(calibratedWhite: 0.07, alpha: 0.95) : NSColor.tertiaryLabelColor
         let percentAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold),
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 13.5, weight: .bold),
             .foregroundColor: pColor
         ]
         let percentStr = NSAttributedString(string: percent, attributes: percentAttrs)
@@ -461,28 +539,33 @@ final class GlassUsageBarView: NSView {
 
         // Track
         let trackRect = NSRect(x: hPad, y: barY, width: innerWidth, height: barH)
-        NSColor.separatorColor.withAlphaComponent(0.18).setFill()
+        NSColor.black.withAlphaComponent(0.10).setFill()
         NSBezierPath(roundedRect: trackRect,
                      xRadius: barH / 2, yRadius: barH / 2).fill()
 
         // Fill with gradient + liquid-glass highlight
         if hasData, displayProgress > 0 {
+            let fillColor = progressColor(for: displayProgress)
             let fillW = max(barH, trackRect.width * displayProgress)
             let fillRect = NSRect(x: trackRect.minX, y: trackRect.minY,
                                   width: fillW, height: barH)
             let fillPath = NSBezierPath(roundedRect: fillRect,
                                         xRadius: barH / 2, yRadius: barH / 2)
 
-            if let gradient = NSGradient(colors: [pColor.withAlphaComponent(0.55), pColor]) {
+            if let gradient = NSGradient(colors: [
+                fillColor.withAlphaComponent(0.72),
+                fillColor,
+                NSColor.systemYellow.withAlphaComponent(0.92)
+            ]) {
                 gradient.draw(in: fillPath, angle: 0)
             }
 
             // Liquid-glass specular highlight stripe (adapts for dark / light)
             if fillW > 10 {
                 let hlRect = NSRect(x: fillRect.minX + 2,
-                                    y: fillRect.midY + 0.5,
+                                    y: fillRect.midY + 0.8,
                                     width: fillRect.width - 4,
-                                    height: barH * 0.35)
+                                    height: barH * 0.32)
                 let hlColor = NSColor(name: nil) { appearance in
                     let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                     return NSColor.white.withAlphaComponent(isDark ? 0.22 : 0.35)
@@ -503,8 +586,8 @@ final class GlassUsageBarView: NSView {
     }
 
     private func progressColor(for value: CGFloat) -> NSColor {
-        if value > 0.5  { return .systemGreen }
-        if value > 0.25 { return .systemOrange }
+        if value > 0.25 { return .systemYellow }
+        if value > 0.10 { return .systemOrange }
         return .systemRed
     }
 }
@@ -557,8 +640,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let refreshInterval: TimeInterval = 5
+    private let liveValidationInterval: TimeInterval = 60
     private let labelsDefaultsKey = "accountDisplayLabels"
+    private let statusAnimationStyleDefaultsKey = "statusAnimationStyle"
+    private let autoSwitchEnabledDefaultsKey = "autoSwitchEnabled"
+    private let autoSwitchThresholdDefaultsKey = "autoSwitchThresholdPercent"
+    private let autoSwitchTargetFloorDefaultsKey = "autoSwitchTargetFloorPercent"
+    private let recommendationThresholdDefaultsKey = "recommendationThresholdPercent"
     private var refreshTimer: Timer?
+    private var statusFrameTimer: Timer?
+    private var lastLiveValidationAt: Date?
+    private var statusAnimationFrame = 0
+    private var lastBaseStatusTitle = ""
     private var accounts: [CodexAccount] = []
     private var lastError: String?
     private var isSwitching = false
@@ -566,17 +659,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var switchAnimationFrame = 0
     private var previousAccounts: [String: CodexAccount] = [:]
     private var notifiedExpiredEmails: Set<String> = []
+    private var removingDeadAccountEmails: Set<String> = []
     private var lastSuggestedEmail: String?
+    private var lastAutoSwitchKey: String?
+    private var authWarningTitle: String?
     private var vibeAnimationTimer: Timer?
     private var vibeAnimationFrame = 0
     private var switchingTitle = "Switching"
     private let switchAnimationFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    private lazy var appSupportDirectory: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("Codex Account Switcher", isDirectory: true)
+    }()
+    private lazy var handoffStateURL: URL = appSupportDirectory.appendingPathComponent("handoff-state.json")
+    private lazy var handoffPromptURL: URL = appSupportDirectory.appendingPathComponent("handoff-prompt.txt")
     private var usageMode: UsageDisplayMode {
         get {
             UsageDisplayMode(rawValue: UserDefaults.standard.string(forKey: "usageDisplayMode") ?? "") ?? .weekly
         }
         set {
             UserDefaults.standard.set(newValue.rawValue, forKey: "usageDisplayMode")
+        }
+    }
+    private var statusAnimationStyle: StatusAnimationStyle {
+        get {
+            StatusAnimationStyle(rawValue: UserDefaults.standard.string(forKey: statusAnimationStyleDefaultsKey) ?? "") ?? .spark
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: statusAnimationStyleDefaultsKey)
+        }
+    }
+    private var autoSwitchEnabled: Bool {
+        get {
+            UserDefaults.standard.object(forKey: autoSwitchEnabledDefaultsKey) as? Bool ?? true
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: autoSwitchEnabledDefaultsKey)
+        }
+    }
+    private var autoSwitchThresholdPercent: Int {
+        get {
+            let stored = UserDefaults.standard.object(forKey: autoSwitchThresholdDefaultsKey) as? Int ?? 4
+            return clampedPercent(stored)
+        }
+        set {
+            UserDefaults.standard.set(clampedPercent(newValue), forKey: autoSwitchThresholdDefaultsKey)
+        }
+    }
+    private var autoSwitchTargetFloorPercent: Int {
+        get {
+            let stored = UserDefaults.standard.object(forKey: autoSwitchTargetFloorDefaultsKey) as? Int ?? autoSwitchThresholdPercent
+            return clampedPercent(stored)
+        }
+        set {
+            UserDefaults.standard.set(clampedPercent(newValue), forKey: autoSwitchTargetFloorDefaultsKey)
+        }
+    }
+    private var recommendationThresholdPercent: Int {
+        get {
+            let stored = UserDefaults.standard.object(forKey: recommendationThresholdDefaultsKey) as? Int ?? 10
+            return clampedPercent(stored)
+        }
+        set {
+            UserDefaults.standard.set(clampedPercent(newValue), forKey: recommendationThresholdDefaultsKey)
         }
     }
 
@@ -599,14 +745,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         RunLoop.current.add(timer, forMode: .common)
         refreshTimer = timer
+
+        let frameTimer = Timer(timeInterval: 0.35, repeats: true) { [weak self] _ in
+            self?.advanceStatusFrame()
+        }
+        RunLoop.current.add(frameTimer, forMode: .common)
+        statusFrameTimer = frameTimer
     }
 
     private func configureStatusButton() {
         guard let button = statusItem.button else { return }
         button.title = ""
         button.toolTip = "Codex Account Switcher"
-        button.image = MenuBarIcon.create()
-        button.imagePosition = .imageLeft
+        button.image = nil
+        button.imagePosition = .noImage
         button.wantsLayer = true
     }
 
@@ -616,15 +768,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard !isSwitching else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            // codex-auth 0.2.x does not support `list --active`; use `--skip-api`
-            // as the primary flag (fast, suitable for the 5s poll). The active row
-            // is still marked with `*`, which parseAccounts relies on.
+            // Use plain `list` for live validation because `list --active` can
+            // leave stale per-account usage in place. Use `--skip-api` only for
+            // the fast 5s status poll; both outputs still mark the active row
+            // with `*`, which parseAccounts relies on.
             var result: CommandResult
-            if forceAPI {
-                result = self.runCodexAuth(["list", "--active"])
-                if result.status != 0 {
-                    result = self.runCodexAuth(["list"])
-                }
+            let now = Date()
+            let shouldValidateLive = forceAPI ||
+                self.lastLiveValidationAt.map { now.timeIntervalSince($0) >= self.liveValidationInterval } ?? true
+            if shouldValidateLive {
+                result = self.runCodexAuth(["list"])
             } else {
                 result = self.runCodexAuth(["list", "--skip-api"])
                 if result.status != 0 {
@@ -632,13 +785,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 }
             }
             let parsed = result.status == 0 ? self.parseAccounts(result.output) : []
+            let reconciled = result.status == 0 ? self.reconciledAccountsWithActiveAuth(parsed) : (accounts: [], warning: nil)
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 if result.status == 0 {
+                    if shouldValidateLive {
+                        self.lastLiveValidationAt = now
+                    }
                     let oldAccounts = self.accounts
-                    self.accounts = parsed
-                    self.lastError = parsed.isEmpty ? "No codex-auth accounts found." : nil
-                    self.processAccountUpdates(old: oldAccounts, new: parsed)
+                    let deadAccounts = reconciled.accounts.filter(\.isExpired)
+                    let visibleAccounts = reconciled.accounts.filter { !$0.isExpired }
+                    self.accounts = visibleAccounts
+                    self.authWarningTitle = reconciled.warning
+                    self.lastError = visibleAccounts.isEmpty ? "No usable codex-auth accounts found." : nil
+                    self.processAccountUpdates(old: oldAccounts, new: visibleAccounts, isLiveRefresh: shouldValidateLive)
+                    self.removeDeadAccounts(deadAccounts, activeWasDead: deadAccounts.contains(where: \.isActive), candidates: visibleAccounts)
                 } else {
                     self.accounts = []
                     self.lastError = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -648,6 +809,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    private struct ActiveAuthIdentity {
+        let authMode: String?
+        let accountID: String?
+        let hasChatGPTTokens: Bool
+        let hasTopLevelAPIKey: Bool
+
+        var isAPIKeyMode: Bool {
+            (authMode?.lowercased() == "apikey") || (!hasChatGPTTokens && hasTopLevelAPIKey)
+        }
+    }
+
+    private struct RegistryEntry {
+        let email: String
+        let accountID: String?
+        let authMode: String?
+    }
+
+    private func reconciledAccountsWithActiveAuth(_ parsed: [CodexAccount]) -> (accounts: [CodexAccount], warning: String?) {
+        guard let identity = currentActiveAuthIdentity() else {
+            return (parsed, nil)
+        }
+
+        if identity.isAPIKeyMode {
+            return (
+                parsed.map { $0.withActive($0.isAPIKeyAccount) },
+                "API key active · manual"
+            )
+        }
+
+        guard identity.hasChatGPTTokens else {
+            return (
+                parsed.map { $0.withActive(false) },
+                "Codex logged out · sign in"
+            )
+        }
+
+        let registry = registryEntriesByAccountID()
+        if let accountID = identity.accountID,
+           let registryEntry = registry[accountID],
+           registryEntry.authMode?.lowercased() != "apikey" {
+            return (
+                parsed.map { $0.withActive($0.email == registryEntry.email) },
+                nil
+            )
+        }
+
+        return (
+            parsed.map { $0.withActive(false) },
+            "Signed in outside switcher · add account"
+        )
+    }
+
+    private func currentActiveAuthIdentity() -> ActiveAuthIdentity? {
+        let url = URL(fileURLWithPath: "\(NSHomeDirectory())/.codex/auth.json")
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        let tokens = object["tokens"] as? [String: Any]
+        return ActiveAuthIdentity(
+            authMode: object["auth_mode"] as? String,
+            accountID: tokens?["account_id"] as? String,
+            hasChatGPTTokens: tokens?["access_token"] is String &&
+                tokens?["refresh_token"] is String &&
+                tokens?["id_token"] is String,
+            hasTopLevelAPIKey: object["OPENAI_API_KEY"] is String
+        )
+    }
+
+    private func registryEntriesByAccountID() -> [String: RegistryEntry] {
+        let url = URL(fileURLWithPath: "\(NSHomeDirectory())/.codex/accounts/registry.json")
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let accountObjects = object["accounts"] as? [[String: Any]] else {
+            return [:]
+        }
+
+        var entries: [String: RegistryEntry] = [:]
+        for account in accountObjects {
+            guard let accountID = account["chatgpt_account_id"] as? String,
+                  !accountID.isEmpty,
+                  let email = account["email"] as? String else {
+                continue
+            }
+            entries[accountID] = RegistryEntry(
+                email: email,
+                accountID: accountID,
+                authMode: account["auth_mode"] as? String
+            )
+        }
+        return entries
+    }
+
+    private func activeAuthMismatchMessage(expectedEmail: String) -> String? {
+        guard let identity = currentActiveAuthIdentity() else {
+            return "codex-auth reported success, but ~/.codex/auth.json could not be read afterward."
+        }
+        if identity.isAPIKeyMode {
+            return "codex-auth reported success, but ~/.codex/auth.json is still in API-key mode. The app will not relaunch Codex into the API-key account automatically."
+        }
+        guard identity.hasChatGPTTokens, let accountID = identity.accountID else {
+            return "codex-auth reported success, but ~/.codex/auth.json does not contain a complete ChatGPT token set."
+        }
+        guard let activeEmail = registryEntriesByAccountID()[accountID]?.email else {
+            return "codex-auth reported success, but the active ChatGPT account is not registered in codex-auth. Use Add Account to link it."
+        }
+        guard activeEmail == expectedEmail else {
+            return "codex-auth reported success, but Codex auth is active for \(activeEmail), not \(expectedEmail)."
+        }
+        return nil
+    }
+
     // MARK: Menu construction
 
     private func rebuildMenu() {
@@ -655,7 +928,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.minimumWidth = 300
 
         // ── Active account header ──
-        if let active = accounts.first(where: { $0.isActive }) {
+        if let authWarningTitle {
+            if !isSwitching, vibeAnimationTimer == nil {
+                setStatusTitleAnimated(authWarningTitle)
+            }
+        } else if let active = accounts.first(where: { $0.isActive }) {
             if !isSwitching, vibeAnimationTimer == nil {
                 setStatusTitleAnimated(statusTitle(for: active))
             }
@@ -694,26 +971,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             menu.addItem(.separator())
             
             // Suggestion Banner
-            if let activeRemaining = active.fiveHourRemainingPercent, activeRemaining <= 10 {
-                let candidates = accounts.filter { !$0.isActive && !$0.isExpired }
-                if let best = candidates.max(by: { score(for: $0) < score(for: $1) }) {
-                    let bestScore = score(for: best)
-                    let bestRemaining = best.fiveHourRemainingPercent ?? 0
-                    if bestScore > -900 && bestRemaining > 10 {
-                        let suggestHeaderItem = NSMenuItem()
-                        suggestHeaderItem.view = SectionHeaderView(title: "Smart Recommendation", symbolName: "sparkles")
-                        menu.addItem(suggestHeaderItem)
-                        
-                        let suggestItem = NSMenuItem()
-                        let bestLabel = displayLabel(for: best)
-                        suggestItem.title = "✨ Switch to \(bestLabel) (\(bestRemaining)% remaining)"
-                        suggestItem.representedObject = best.selector
-                        suggestItem.action = #selector(switchAccount(_:))
-                        suggestItem.target = self
-                        menu.addItem(suggestItem)
-                        menu.addItem(.separator())
-                    }
-                }
+            if shouldRecommendSwitch(from: active),
+               let best = bestRecommendation(excluding: active.email) {
+                let bestLabel = displayLabel(for: best)
+                let bestLowest = best.lowestRemainingPercent ?? 0
+                let suggestHeaderItem = NSMenuItem()
+                suggestHeaderItem.view = SectionHeaderView(title: "Smart Recommendation", symbolName: "sparkles")
+                menu.addItem(suggestHeaderItem)
+
+                let suggestItem = NSMenuItem()
+                suggestItem.title = "✨ Switch to \(bestLabel) (\(bestLowest)% lowest cap)"
+                suggestItem.toolTip = "5-hour \(remainingPercentText(fromRemaining: best.fiveHourRemainingPercent)), weekly \(remainingPercentText(fromRemaining: best.weeklyRemainingPercent))"
+                suggestItem.representedObject = best.selector
+                suggestItem.action = #selector(switchAccount(_:))
+                suggestItem.target = self
+                menu.addItem(suggestItem)
+                menu.addItem(.separator())
             }
         }
 
@@ -796,6 +1069,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             labelsItem.submenu = labelsMenu
             menu.addItem(labelsItem)
 
+            let autoSwitchItem = NSMenuItem(title: "Auto Switch", action: nil, keyEquivalent: "")
+            autoSwitchItem.image = NSImage(systemSymbolName: "bolt.horizontal.circle", accessibilityDescription: "Auto Switch")
+            let autoSwitchMenu = NSMenu()
+            let enabledItem = NSMenuItem(
+                title: autoSwitchEnabled ? "Enabled" : "Disabled",
+                action: #selector(toggleAutoSwitch(_:)),
+                keyEquivalent: ""
+            )
+            enabledItem.target = self
+            enabledItem.state = autoSwitchEnabled ? .on : .off
+            autoSwitchMenu.addItem(enabledItem)
+
+            let switchBelowItem = NSMenuItem(
+                title: "Switch when active is below \(autoSwitchThresholdPercent)%…",
+                action: #selector(setAutoSwitchThreshold(_:)),
+                keyEquivalent: ""
+            )
+            switchBelowItem.target = self
+            autoSwitchMenu.addItem(switchBelowItem)
+
+            let targetFloorItem = NSMenuItem(
+                title: "Prefer targets at/above \(autoSwitchTargetFloorPercent)%…",
+                action: #selector(setAutoSwitchTargetFloor(_:)),
+                keyEquivalent: ""
+            )
+            targetFloorItem.target = self
+            autoSwitchMenu.addItem(targetFloorItem)
+
+            let recommendBelowItem = NSMenuItem(
+                title: "Recommend below \(recommendationThresholdPercent)%…",
+                action: #selector(setRecommendationThreshold(_:)),
+                keyEquivalent: ""
+            )
+            recommendBelowItem.target = self
+            autoSwitchMenu.addItem(recommendBelowItem)
+
+            let policyItem = NSMenuItem(title: "API-key accounts are manual-only", action: nil, keyEquivalent: "")
+            policyItem.isEnabled = false
+            autoSwitchMenu.addItem(.separator())
+            autoSwitchMenu.addItem(policyItem)
+            autoSwitchItem.submenu = autoSwitchMenu
+            menu.addItem(autoSwitchItem)
+
+            let animationItem = NSMenuItem(title: "Status Animation", action: nil, keyEquivalent: "")
+            animationItem.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Animation")
+            let animationMenu = NSMenu()
+            for style in StatusAnimationStyle.allCases {
+                let item = NSMenuItem(title: style.title, action: #selector(setStatusAnimationStyle(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = style.rawValue
+                item.state = statusAnimationStyle == style ? .on : .off
+                animationMenu.addItem(item)
+            }
+            animationItem.submenu = animationMenu
+            menu.addItem(animationItem)
+
             let removeItem = NSMenuItem(title: "Remove Account", action: nil, keyEquivalent: "")
             removeItem.image = NSImage(systemSymbolName: "minus.circle", accessibilityDescription: "Remove")
             let removeMenu = NSMenu()
@@ -830,19 +1159,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func setStatusTitleAnimated(_ newTitle: String) {
         guard let button = statusItem.button else { return }
-        guard button.title != newTitle else { return }
+        lastBaseStatusTitle = newTitle
+        let renderedTitle = animatedStatusTitle(for: newTitle)
+        guard button.title != renderedTitle else { return }
         button.layer?.removeAnimation(forKey: "completionFlash")
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.15
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
             button.animator().alphaValue = 0.0
         }) {
-            button.title = newTitle
+            button.title = renderedTitle
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = 0.2
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 button.animator().alphaValue = 1.0
             })
+        }
+    }
+
+    private func advanceStatusFrame() {
+        guard !lastBaseStatusTitle.isEmpty,
+              let button = statusItem.button,
+              !isSwitching,
+              vibeAnimationTimer == nil else { return }
+        statusAnimationFrame += 1
+        button.title = animatedStatusTitle(for: lastBaseStatusTitle)
+    }
+
+    private func animatedStatusTitle(for title: String) -> String {
+        guard !title.isEmpty else { return "" }
+        return "\(statusAnimationPrefix()) \(title)"
+    }
+
+    private func statusAnimationPrefix() -> String {
+        switch statusAnimationStyle {
+        case .spark:
+            return ["✦", "✧", "✶", "✳", "✢"][statusAnimationFrame % 5]
+        case .orbit:
+            return ["◜", "◠", "◝", "◞", "◡", "◟"][statusAnimationFrame % 6]
+        case .pulse:
+            return ["●", "•", "·", "•"][statusAnimationFrame % 4]
+        case .wave:
+            return ["≋", "∿", "≈", "∿"][statusAnimationFrame % 4]
+        case .bars:
+            return ["▁", "▃", "▅", "▇", "▅", "▃"][statusAnimationFrame % 6]
+        case .arrows:
+            return ["↻", "↺", "↻", "↺"][statusAnimationFrame % 4]
         }
     }
 
@@ -1038,9 +1400,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         switchTo(selector: selector)
     }
 
+    @objc private func setStatusAnimationStyle(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let style = StatusAnimationStyle(rawValue: raw) else { return }
+        statusAnimationStyle = style
+        statusAnimationFrame = 0
+        rebuildMenu()
+    }
+
+    @objc private func toggleAutoSwitch(_ sender: NSMenuItem) {
+        autoSwitchEnabled.toggle()
+        lastAutoSwitchKey = nil
+        rebuildMenu()
+    }
+
+    @objc private func setAutoSwitchThreshold(_ sender: NSMenuItem) {
+        promptForPercent(
+            title: "Auto-switch threshold",
+            message: "Switch away from the active account when either limit drops below this percentage.",
+            currentValue: autoSwitchThresholdPercent
+        ) { [weak self] value in
+            self?.autoSwitchThresholdPercent = value
+            if let self = self, self.autoSwitchTargetFloorPercent < value {
+                self.autoSwitchTargetFloorPercent = value
+            }
+            self?.lastAutoSwitchKey = nil
+            self?.rebuildMenu()
+        }
+    }
+
+    @objc private func setAutoSwitchTargetFloor(_ sender: NSMenuItem) {
+        promptForPercent(
+            title: "Auto-switch target floor",
+            message: "Prefer automatic targets whose lowest 5-hour/weekly limit is at or above this percentage. If none qualify, the app waits for the non-API account whose depleted limit resets soonest.",
+            currentValue: autoSwitchTargetFloorPercent
+        ) { [weak self] value in
+            self?.autoSwitchTargetFloorPercent = value
+            self?.lastAutoSwitchKey = nil
+            self?.rebuildMenu()
+        }
+    }
+
+    @objc private func setRecommendationThreshold(_ sender: NSMenuItem) {
+        promptForPercent(
+            title: "Recommendation threshold",
+            message: "Show a non-automatic recommendation when the active account drops to or below this percentage.",
+            currentValue: recommendationThresholdPercent
+        ) { [weak self] value in
+            self?.recommendationThresholdPercent = value
+            self?.lastSuggestedEmail = nil
+            self?.rebuildMenu()
+        }
+    }
+
     // MARK: - Account switching
 
-    private func switchTo(selector: String) {
+    private func validatedSwitchAccount(for query: String) -> (account: CodexAccount?, revoked: CodexAccount?, error: String?) {
+        var result = runCodexAuth(["list"])
+        if result.status != 0 {
+            result = runCodexAuth(["list", "--skip-api"])
+        }
+        guard result.status == 0 else {
+            return (nil, nil, result.output.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        let liveAccounts = parseAccounts(result.output)
+        guard let account = liveAccounts.first(where: { $0.email == query || $0.selector == query }) else {
+            return (nil, nil, nil)
+        }
+        if account.isExpired {
+            return (nil, account, nil)
+        }
+        return (account, nil, nil)
+    }
+
+    private func switchTo(selector: String, handoffReason: String = "manual account switch", runContinuation: Bool = true) {
         guard !isSwitching else { return }
         let target = accounts.first(where: { $0.selector == selector })
         isSwitching = true
@@ -1049,6 +1483,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
+            let targetQuery = target?.email ?? selector
+            let sourceThreadID = self.mostRecentCodexThreadID()
+            let activeAccount = self.accounts.first(where: { $0.isActive })
+            let validation = self.validatedSwitchAccount(for: targetQuery)
+            if let revoked = validation.revoked {
+                _ = self.runCodexAuth(["remove", revoked.email])
+                DispatchQueue.main.async {
+                    self.isSwitching = false
+                    self.endSwitchAnimation()
+                    self.authWarningTitle = "⚠︎ \(self.limitedLabel(self.customLabel(forEmail: revoked.email) ?? revoked.selector)) auth revoked · sign in"
+                    self.accounts.removeAll { $0.email == revoked.email }
+                    self.clearCustomLabel(forEmail: revoked.email)
+                    self.rebuildMenu()
+                    self.refreshAccounts(forceAPI: true)
+                }
+                return
+            }
+            if let error = validation.error {
+                DispatchQueue.main.async {
+                    self.isSwitching = false
+                    self.endSwitchAnimation()
+                    self.showAlert(title: "Cannot switch account", message: error)
+                    self.refreshAccounts(forceAPI: true)
+                }
+                return
+            }
+            guard let validatedTarget = validation.account else {
+                DispatchQueue.main.async {
+                    self.isSwitching = false
+                    self.endSwitchAnimation()
+                    self.showAlert(title: "Cannot switch account", message: "The target account could not be found in codex-auth.")
+                    self.refreshAccounts(forceAPI: true)
+                }
+                return
+            }
+            self.persistHandoffState(
+                reason: handoffReason,
+                sourceThreadID: sourceThreadID,
+                previousEmail: activeAccount?.email,
+                targetEmail: validatedTarget.email,
+                active: activeAccount,
+                recommended: validatedTarget,
+                accounts: self.accounts
+            )
 
             if let syncError = self.syncActiveAuthSnapshot() {
                 DispatchQueue.main.async {
@@ -1061,7 +1539,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
 
             // codex-auth 0.2.x matches by email/alias, not row-number selector
-            let switchResult = self.runCodexAuth(["switch", target?.email ?? selector])
+            let switchResult = self.runCodexAuth(["switch", validatedTarget.email])
             if switchResult.status != 0 {
                 DispatchQueue.main.async {
                     self.isSwitching = false
@@ -1071,17 +1549,191 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 }
                 return
             }
+            if let mismatch = self.activeAuthMismatchMessage(expectedEmail: validatedTarget.email) {
+                DispatchQueue.main.async {
+                    self.isSwitching = false
+                    self.endSwitchAnimation()
+                    self.showAlert(title: "Switch did not update Codex auth", message: mismatch)
+                    self.refreshAccounts(forceAPI: true)
+                }
+                return
+            }
 
-            let restartResult = self.restartCodexApp()
+            let restartResult = self.restartCodexApp(threadID: sourceThreadID)
+            var handoffResult: CommandResult?
+            if restartResult.status == 0, runContinuation {
+                handoffResult = self.continueCodexAfterSwitch(
+                    from: activeAccount?.email,
+                    to: validatedTarget.email,
+                    threadID: sourceThreadID
+                )
+            }
             DispatchQueue.main.async {
                 self.isSwitching = false
                 self.endSwitchAnimation()
+                self.authWarningTitle = nil
                 if restartResult.status != 0 {
                     self.showAlert(title: "Codex relaunch failed", message: restartResult.output)
+                } else if let handoffResult, handoffResult.status != 0 {
+                    self.sendNotification(
+                        title: "Auto handoff could not start",
+                        body: handoffResult.output.isEmpty ? "The handoff state was saved, but Codex resume did not launch." : handoffResult.output
+                    )
                 }
                 self.refreshAccounts()
             }
         }
+    }
+
+    func runCurrentAccountHandoffTest() -> CommandResult {
+        var listResult = runCodexAuth(["list"])
+        if listResult.status != 0 {
+            listResult = runCodexAuth(["list", "--skip-api"])
+        }
+        guard listResult.status == 0 else { return listResult }
+
+        let liveAccounts = parseAccounts(listResult.output)
+        guard let active = liveAccounts.first(where: { $0.isActive && !$0.isExpired }) else {
+            return CommandResult(status: 1, output: "No active, valid Codex account was found for the handoff test.")
+        }
+
+        let sourceThreadID = mostRecentCodexThreadID()
+
+        persistHandoffState(
+            reason: "signed end-to-end handoff test",
+            sourceThreadID: sourceThreadID,
+            previousEmail: active.email,
+            targetEmail: active.email,
+            active: active,
+            recommended: active,
+            accounts: liveAccounts
+        )
+
+        let switchResult = runCodexAuth(["switch", active.email])
+        guard switchResult.status == 0 else { return switchResult }
+
+        let restartResult = restartCodexApp(threadID: sourceThreadID)
+        guard restartResult.status == 0 else { return restartResult }
+        return continueCodexAfterSwitch(from: active.email, to: active.email, threadID: sourceThreadID)
+    }
+
+    func runAccountPolicyTests() -> CommandResult {
+        let calendar = Calendar.current
+        guard let now = calendar.date(from: DateComponents(year: 2026, month: 6, day: 25, hour: 17, minute: 0)) else {
+            return CommandResult(status: 1, output: "Could not construct the account-policy test date.")
+        }
+
+        func account(
+            selector: String,
+            email: String,
+            plan: String = "Plus",
+            fiveHour: Int?,
+            fiveHourUsage: String,
+            weekly: Int?,
+            weeklyUsage: String
+        ) -> CodexAccount {
+            CodexAccount(
+                selector: selector,
+                email: email,
+                plan: plan,
+                fiveHourUsage: fiveHourUsage,
+                weeklyUsage: weeklyUsage,
+                fiveHourRemainingPercent: fiveHour,
+                weeklyRemainingPercent: weekly,
+                lastActivity: "-",
+                isActive: false
+            )
+        }
+
+        let apiKey = account(
+            selector: "03",
+            email: "sk-example(api@example.com)",
+            plan: "API_KEY",
+            fiveHour: nil,
+            fiveHourUsage: "-",
+            weekly: nil,
+            weeklyUsage: "-"
+        )
+        let restoresFirst = account(
+            selector: "05",
+            email: "first@example.com",
+            fiveHour: 0,
+            fiveHourUsage: "0% (18:27)",
+            weekly: 84,
+            weeklyUsage: "84% (13:27 on 2 Jul)"
+        )
+        let restoresLater = account(
+            selector: "06",
+            email: "later@example.com",
+            fiveHour: 3,
+            fiveHourUsage: "3% (19:36)",
+            weekly: 69,
+            weeklyUsage: "69% (09:36 on 2 Jul)"
+        )
+        guard let fallback = automaticSwitchTarget(in: [apiKey, restoresLater, restoresFirst], now: now, targetFloor: 4),
+              fallback.account.selector == restoresFirst.selector,
+              fallback.waitsForReset else {
+            return CommandResult(status: 1, output: "Fallback selection did not choose the next-restoring non-API account.")
+        }
+
+        let available = account(
+            selector: "01",
+            email: "available@example.com",
+            fiveHour: 25,
+            fiveHourUsage: "25% (22:00)",
+            weekly: 40,
+            weeklyUsage: "40% (12:00 on 3 Jul)"
+        )
+        guard let normal = automaticSwitchTarget(in: [apiKey, restoresFirst, available], now: now, targetFloor: 4),
+              normal.account.selector == available.selector,
+              !normal.waitsForReset else {
+            return CommandResult(status: 1, output: "Normal selection did not prefer an available non-API account.")
+        }
+
+        let codexLookup = run("/usr/bin/which", ["codex"])
+        guard codexLookup.status == 0,
+              !codexLookup.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return CommandResult(status: 1, output: "The menu-bar runtime environment still cannot resolve the codex executable.")
+        }
+
+        return CommandResult(
+            status: 0,
+            output: "Account policy tests passed: API-key accounts are manual-only, fallback chooses the next reset, and Add Account can resolve codex."
+        )
+    }
+
+    func runAuthStateDiagnostics() -> CommandResult {
+        var result = runCodexAuth(["list"])
+        if result.status != 0 {
+            result = runCodexAuth(["list", "--skip-api"])
+        }
+        guard result.status == 0 else { return result }
+
+        let parsed = parseAccounts(result.output)
+        let reconciled = reconciledAccountsWithActiveAuth(parsed)
+        let codexAuthActive = parsed.first(where: \.isActive)?.email ?? "none"
+        let switcherActive = reconciled.accounts.first(where: \.isActive)?.email ?? "none"
+        let expired = parsed.filter(\.isExpired).map(\.email)
+        let apiAutoEligible = automaticSwitchTarget(in: parsed.filter(\.isAPIKeyAccount), targetFloor: 4) != nil
+
+        let identity = currentActiveAuthIdentity()
+        let mode = identity?.authMode ?? "unknown"
+        let accountID = identity?.accountID ?? "none"
+        let registryEmail = identity?.accountID.flatMap { registryEntriesByAccountID()[$0]?.email } ?? "none"
+        let warning = reconciled.warning ?? "none"
+
+        let output = """
+        Auth diagnostics:
+        - auth.json mode: \(mode)
+        - auth.json account id: \(accountID)
+        - auth.json registry email: \(registryEmail)
+        - codex-auth active row: \(codexAuthActive)
+        - switcher reconciled active: \(switcherActive)
+        - warning: \(warning)
+        - expired/revoked rows: \(expired.isEmpty ? "none" : expired.joined(separator: ", "))
+        - API key eligible for automatic switch: \(apiAutoEligible ? "yes" : "no")
+        """
+        return CommandResult(status: 0, output: output)
     }
 
     // MARK: - Switch animation (spinner + pulse)
@@ -1149,14 +1801,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         do {
             let data = try Data(contentsOf: registryURL)
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let activeKey = json["active_account_key"] as? String else {
+                  let activeKey = json["active_account_key"] as? String,
+                  let accountObjects = json["accounts"] as? [[String: Any]] else {
                 return "Could not read active_account_key from registry.json."
+            }
+            guard let registryAccount = accountObjects.first(where: { $0["account_key"] as? String == activeKey }),
+                  (registryAccount["auth_mode"] as? String)?.lowercased() != "apikey",
+                  let registryAccountID = registryAccount["chatgpt_account_id"] as? String,
+                  !registryAccountID.isEmpty else {
+                return nil
             }
 
             let encoded = Data(activeKey.utf8).base64EncodedString().replacingOccurrences(of: "=", with: "")
             let accountAuthURL = URL(fileURLWithPath: "\(home)/.codex/accounts/\(encoded).auth.json")
             guard FileManager.default.fileExists(atPath: activeAuthURL.path) else {
                 return "Active auth file does not exist at \(activeAuthURL.path)."
+            }
+            guard let activeAuthData = try? Data(contentsOf: activeAuthURL),
+                  let activeAuth = try? JSONSerialization.jsonObject(with: activeAuthData) as? [String: Any],
+                  let identity = currentActiveAuthIdentity(),
+                  !identity.isAPIKeyMode,
+                  identity.accountID == registryAccountID,
+                  (activeAuth["auth_mode"] as? String)?.lowercased() != "apikey" else {
+                return nil
             }
 
             let backupURL = accountAuthURL.deletingLastPathComponent().appendingPathComponent(
@@ -1202,7 +1869,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     // MARK: - App restart
 
-    private func restartCodexApp() -> CommandResult {
+    private func restartCodexApp(threadID: String? = nil) -> CommandResult {
         var transcript: [String] = []
         transcript.append("Force-quitting Codex App process tree...")
 
@@ -1237,7 +1904,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return CommandResult(status: 1, output: transcript.joined(separator: "\n"))
         }
 
+        if let threadID {
+            let deepLinkResult = openCodexThread(threadID)
+            if deepLinkResult.status != 0 {
+                transcript.append("Could not open handoff thread \(threadID): \(deepLinkResult.output)")
+            } else {
+                Thread.sleep(forTimeInterval: 2)
+            }
+        }
+
         return CommandResult(status: 0, output: transcript.joined(separator: "\n"))
+    }
+
+    private func openCodexThread(_ threadID: String) -> CommandResult {
+        let uuidPattern = #"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"#
+        guard threadID.range(of: uuidPattern, options: .regularExpression) != nil else {
+            return CommandResult(status: 2, output: "Invalid Codex thread id: \(threadID)")
+        }
+        return run("/usr/bin/open", ["codex://threads/\(threadID)"])
+    }
+
+    private func continueCodexAfterSwitch(from oldEmail: String?, to newEmail: String, threadID: String?) -> CommandResult {
+        let handoffNote = """
+        Account handoff complete. Reopened the source Codex thread so its existing Goal state can continue without visible composer automation.
+        """
+        do {
+            try ensureAppSupportDirectory()
+            try handoffNote.write(to: handoffPromptURL, atomically: true, encoding: .utf8)
+        } catch {
+            return CommandResult(status: 1, output: error.localizedDescription)
+        }
+
+        let logURL = URL(fileURLWithPath: "/tmp/codex-account-switcher-handoff.log")
+        let header = "Codex Account Switcher handoff\nprevious: \(oldEmail ?? "unknown")\ncurrent: \(newEmail)\nprimary: reopen source thread\ncontinuation: existing Goal state\ncomposer automation: disabled\n---\n"
+        try? header.write(to: logURL, atomically: true, encoding: .utf8)
+
+        let resolvedThreadID = threadID ?? mostRecentCodexThreadID()
+        if let resolvedThreadID {
+            appendHandoffLog("Source thread: \(resolvedThreadID)", to: logURL)
+            if let status = goalStatus(for: resolvedThreadID) {
+                appendHandoffLog("Existing goal status: \(status)", to: logURL)
+            }
+            let openResult = openCodexThread(resolvedThreadID)
+            if openResult.status == 0 {
+                appendHandoffLog("Opened source thread \(resolvedThreadID).", to: logURL)
+                Thread.sleep(forTimeInterval: 2)
+            } else {
+                appendHandoffLog("Could not open source thread \(resolvedThreadID): \(openResult.output)", to: logURL)
+            }
+        } else {
+            appendHandoffLog("No source thread id was available; using the visible Codex thread.", to: logURL)
+        }
+
+        appendHandoffLog("Composer automation skipped; no UI scripting permission is required.", to: logURL)
+        return CommandResult(status: 0, output: "Codex thread reopened without composer automation or UI scripting permission.")
+    }
+
+    private func mostRecentCodexThreadID() -> String? {
+        let sessionsURL = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".codex/sessions", isDirectory: true)
+        guard let enumerator = FileManager.default.enumerator(
+            at: sessionsURL,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        var newest: (url: URL, date: Date)?
+        for case let url as URL in enumerator where url.pathExtension == "jsonl" {
+            guard url.lastPathComponent.hasPrefix("rollout-"),
+                  let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]),
+                  values.isRegularFile == true,
+                  let date = values.contentModificationDate else { continue }
+            if newest == nil || date > newest!.date {
+                newest = (url, date)
+            }
+        }
+
+        guard let filename = newest?.url.deletingPathExtension().lastPathComponent,
+              let match = filename.range(
+                of: #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"#,
+                options: .regularExpression
+              ) else { return nil }
+        return String(filename[match])
+    }
+
+    private func goalStatus(for threadID: String) -> String? {
+        let databasePaths = [
+            "\(NSHomeDirectory())/.codex/goals_1.sqlite",
+            "\(NSHomeDirectory())/.codex/sqlite/goals_1.sqlite"
+        ]
+        let safeThreadID = threadID.replacingOccurrences(of: "'", with: "''")
+        for path in databasePaths where FileManager.default.fileExists(atPath: path) {
+            let result = run("/usr/bin/sqlite3", [
+                path,
+                "SELECT status FROM thread_goals WHERE thread_id = '\(safeThreadID)' LIMIT 1;"
+            ])
+            let status = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if result.status == 0, !status.isEmpty {
+                return status
+            }
+        }
+        return nil
+    }
+
+    private func appendHandoffLog(_ message: String, to url: URL) {
+        guard let data = ("\(message)\n").data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            _ = try? handle.write(contentsOf: data)
+        } else {
+            _ = try? data.write(to: url)
+        }
     }
 
     private func codexAppPIDs() -> [String] {
@@ -1380,6 +2158,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         process.standardOutput = pipe
         process.standardError = pipe
         var environment = ProcessInfo.processInfo.environment
+        let home = NSHomeDirectory()
+        let requiredPathDirectories = [
+            "\(home)/.local/bin",
+            "/Applications/Codex.app/Contents/Resources",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin"
+        ]
+        let inheritedPathDirectories = (environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init)
+        environment["PATH"] = (requiredPathDirectories + inheritedPathDirectories)
+            .reduce(into: [String]()) { result, directory in
+                if !directory.isEmpty, !result.contains(directory) {
+                    result.append(directory)
+                }
+            }
+            .joined(separator: ":")
+        if let codexCLI = codexCLIPath() {
+            environment["CODEX_CLI_PATH"] = codexCLI
+        }
         if let brewNode = nodeExecutablePath() {
             environment["CODEX_AUTH_NODE_EXECUTABLE"] = brewNode
         } else {
@@ -1409,6 +2211,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         alert.informativeText = message.trimmingCharacters(in: .whitespacesAndNewlines)
         alert.alertStyle = .warning
         alert.runModal()
+    }
+
+    private func promptForPercent(title: String, message: String, currentValue: Int, onSave: (Int) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 100, height: 24))
+        field.stringValue = "\(currentValue)"
+        field.placeholderString = "0-100"
+        alert.accessoryView = field
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            let raw = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let value = Int(raw) else {
+                showAlert(title: "Invalid percentage", message: "Please enter a whole number from 0 to 100.")
+                return
+            }
+            onSave(clampedPercent(value))
+        }
+    }
+
+    private func clampedPercent(_ value: Int) -> Int {
+        max(0, min(100, value))
     }
 
     private func displayLabel(for account: CodexAccount) -> String {
@@ -1446,6 +2274,106 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         UserDefaults.standard.dictionary(forKey: labelsDefaultsKey) as? [String: String] ?? [:]
     }
 
+    private func removeDeadAccounts(_ deadAccounts: [CodexAccount], activeWasDead: Bool, candidates: [CodexAccount]) {
+        let pending = deadAccounts.filter { !removingDeadAccountEmails.contains($0.email) }
+        guard !pending.isEmpty else { return }
+
+        pending.forEach { removingDeadAccountEmails.insert($0.email) }
+        let bestAfterCleanup = activeWasDead
+            ? automaticSwitchTarget(in: candidates)?.account
+            : nil
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            for account in pending {
+                _ = self.runCodexAuth(["remove", account.email])
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                for account in pending {
+                    self.removingDeadAccountEmails.remove(account.email)
+                    self.clearCustomLabel(forEmail: account.email)
+                    self.previousAccounts.removeValue(forKey: account.email)
+                    self.notifiedExpiredEmails.remove(account.email)
+                }
+
+                if activeWasDead, !self.isSwitching, let bestAfterCleanup {
+                    self.sendNotification(
+                        title: "Removed expired auth",
+                        body: "Removed a dead account and switching to \(self.displayLabel(for: bestAfterCleanup))."
+                    )
+                    self.switchTo(selector: bestAfterCleanup.selector)
+                } else {
+                    self.refreshAccounts(forceAPI: true)
+                }
+            }
+        }
+    }
+
+    private func ensureAppSupportDirectory() throws {
+        try FileManager.default.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+    }
+
+    private func handoffPrompt(reason: String, sourceThreadID: String?, previousEmail: String?, targetEmail: String?) -> String {
+        """
+        Continue the previous Codex task after an account handoff.
+
+        Handoff reason: \(reason)
+        Source thread: \(sourceThreadID ?? "unknown")
+        Previous account: \(previousEmail ?? "unknown")
+        Current account: \(targetEmail ?? "unknown")
+
+        Resume from the latest recorded Codex session and continue the user's most recent task. Preserve the prior intent, avoid restarting from scratch, and report only if required context is missing.
+        """
+    }
+
+    private func persistHandoffState(
+        reason: String,
+        sourceThreadID: String? = nil,
+        previousEmail: String?,
+        targetEmail: String?,
+        active: CodexAccount?,
+        recommended: CodexAccount?,
+        accounts: [CodexAccount]
+    ) {
+        let prompt = handoffPrompt(reason: reason, sourceThreadID: sourceThreadID, previousEmail: previousEmail, targetEmail: targetEmail)
+        let state = HandoffState(
+            updatedAt: Date(),
+            reason: reason,
+            sourceThreadID: sourceThreadID,
+            previousEmail: previousEmail,
+            targetEmail: targetEmail,
+            activeEmail: active?.email,
+            activeLowestRemainingPercent: active?.lowestRemainingPercent,
+            recommendedEmail: recommended?.email,
+            recommendedLowestRemainingPercent: recommended?.lowestRemainingPercent,
+            accounts: accounts.map {
+                HandoffAccountState(
+                    email: $0.email,
+                    label: displayLabel(for: $0),
+                    plan: $0.plan,
+                    fiveHourRemainingPercent: $0.fiveHourRemainingPercent,
+                    weeklyRemainingPercent: $0.weeklyRemainingPercent,
+                    isActive: $0.isActive
+                )
+            },
+            continuationPrompt: prompt
+        )
+
+        do {
+            try ensureAppSupportDirectory()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(state)
+            try data.write(to: handoffStateURL, options: .atomic)
+            try prompt.write(to: handoffPromptURL, atomically: true, encoding: .utf8)
+        } catch {
+            NSLog("Codex Account Switcher handoff state failed: \(error.localizedDescription)")
+        }
+    }
+
     private func shellEscaped(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
@@ -1463,6 +2391,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
         return nil
+    }
+
+    private func codexCLIPath() -> String? {
+        let home = NSHomeDirectory()
+        let candidates = [
+            "\(home)/.local/bin/codex",
+            "/Applications/Codex.app/Contents/Resources/codex",
+            "/opt/homebrew/bin/codex",
+            "/usr/local/bin/codex"
+        ]
+        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
     }
 
     // MARK: - Notifications and Scoring
@@ -1487,22 +2426,124 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func score(for account: CodexAccount) -> Double {
         if account.isExpired { return -999.0 }
-        if account.plan.uppercased() == "API_KEY" {
-            return 50.0
+        guard account.hasComparableUsageCaps,
+              let fiveHourRemaining = account.fiveHourRemainingPercent,
+              let weeklyRemaining = account.weeklyRemainingPercent else {
+            return -999.0
         }
-        let fiveHourRemaining = Double(account.fiveHourRemainingPercent ?? 0)
-        let weeklyRemaining = Double(account.weeklyRemainingPercent ?? 0)
-        return fiveHourRemaining * 0.7 + weeklyRemaining * 0.3
+        let lowest = Double(min(fiveHourRemaining, weeklyRemaining))
+        let average = (Double(fiveHourRemaining) + Double(weeklyRemaining)) / 2.0
+        return lowest * 0.7 + average * 0.3
     }
 
-    private func processAccountUpdates(old: [CodexAccount], new: [CodexAccount]) {
+    private func shouldRecommendSwitch(from active: CodexAccount) -> Bool {
+        guard let lowest = active.lowestRemainingPercent else { return false }
+        return lowest <= recommendationThresholdPercent
+    }
+
+    private func shouldAutoSwitch(from active: CodexAccount) -> Bool {
+        guard autoSwitchEnabled else { return false }
+        guard let lowest = active.lowestRemainingPercent else { return false }
+        return lowest < autoSwitchThresholdPercent
+    }
+
+    private func bestRecommendation(excluding email: String? = nil) -> CodexAccount? {
+        automaticCandidates(excluding: email)
+            .filter { ($0.lowestRemainingPercent ?? 0) >= autoSwitchTargetFloorPercent }
+            .max { score(for: $0) < score(for: $1) }
+    }
+
+    private func automaticCandidates(excluding email: String? = nil) -> [CodexAccount] {
+        accounts.filter { account in
+            !account.isExpired &&
+            !account.isAPIKeyAccount &&
+            account.email != email &&
+            account.hasComparableUsageCaps
+        }
+    }
+
+    private func automaticSwitchTarget(excluding email: String? = nil, now: Date = Date()) -> (account: CodexAccount, waitsForReset: Bool)? {
+        automaticSwitchTarget(in: automaticCandidates(excluding: email), now: now)
+    }
+
+    private func automaticSwitchTarget(in candidates: [CodexAccount], now: Date = Date(), targetFloor: Int? = nil) -> (account: CodexAccount, waitsForReset: Bool)? {
+        let floor = targetFloor ?? autoSwitchTargetFloorPercent
+        let eligible = candidates.filter {
+            !$0.isExpired &&
+            !$0.isAPIKeyAccount &&
+            $0.hasComparableUsageCaps
+        }
+        if let available = eligible
+            .filter({ ($0.lowestRemainingPercent ?? 0) >= floor })
+            .max(by: { score(for: $0) < score(for: $1) }) {
+            return (available, false)
+        }
+
+        let fallback = eligible.min { lhs, rhs in
+            let lhsReset = nextDepletedLimitReset(for: lhs, now: now, targetFloor: floor) ?? .distantFuture
+            let rhsReset = nextDepletedLimitReset(for: rhs, now: now, targetFloor: floor) ?? .distantFuture
+            if lhsReset != rhsReset {
+                return lhsReset < rhsReset
+            }
+            return score(for: lhs) > score(for: rhs)
+        }
+        return fallback.map { ($0, true) }
+    }
+
+    private func nextDepletedLimitReset(for account: CodexAccount, now: Date, targetFloor: Int? = nil) -> Date? {
+        let floor = targetFloor ?? autoSwitchTargetFloorPercent
+        let limits: [(remaining: Int?, usage: String)] = [
+            (account.fiveHourRemainingPercent, account.fiveHourUsage),
+            (account.weeklyRemainingPercent, account.weeklyUsage)
+        ]
+        return limits.compactMap { limit in
+            guard let remaining = limit.remaining, remaining < floor else { return nil }
+            return nextResetDate(from: limit.usage, now: now)
+        }.min()
+    }
+
+    private func nextResetDate(from usage: String, now: Date) -> Date? {
+        guard let resetText = parenthesizedValue(from: usage) else { return nil }
+        let calendar = Calendar.current
+        let locale = Locale(identifier: "en_US_POSIX")
+
+        if resetText.contains(" on ") {
+            let currentYear = calendar.component(.year, from: now)
+            for format in ["HH:mm 'on' d MMM yyyy", "HH:mm 'on' MMM d yyyy"] {
+                let formatter = DateFormatter()
+                formatter.locale = locale
+                formatter.calendar = calendar
+                formatter.timeZone = calendar.timeZone
+                formatter.dateFormat = format
+                if let parsed = formatter.date(from: "\(resetText) \(currentYear)") {
+                    return parsed > now
+                        ? parsed
+                        : calendar.date(byAdding: .year, value: 1, to: parsed)
+                }
+            }
+            return nil
+        }
+
+        let components = resetText.split(separator: ":")
+        guard components.count == 2,
+              let hour = Int(components[0]),
+              let minute = Int(components[1]),
+              var reset = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: now) else {
+            return nil
+        }
+        if reset <= now {
+            reset = calendar.date(byAdding: .day, value: 1, to: reset) ?? reset
+        }
+        return reset
+    }
+
+    private func processAccountUpdates(old: [CodexAccount], new: [CodexAccount], isLiveRefresh: Bool) {
         let isFirstLoad = previousAccounts.isEmpty
         
         if isFirstLoad {
             for acc in new {
                 previousAccounts[acc.email] = acc
             }
-            return
         }
         
         for account in new {
@@ -1545,28 +2586,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             previousAccounts[account.email] = account
         }
         
-        if let active = new.first(where: { $0.isActive }),
-           let activeRemaining = active.fiveHourRemainingPercent,
-           activeRemaining <= 10 {
-            let candidates = new.filter { !$0.isActive && !$0.isExpired }
-            if let best = candidates.max(by: { score(for: $0) < score(for: $1) }) {
-                let bestScore = score(for: best)
-                let bestRemaining = best.fiveHourRemainingPercent ?? 0
-                if bestScore > -900 && bestRemaining > 10 {
-                    let bestLabel = displayLabel(for: best)
-                    if lastSuggestedEmail != best.email {
-                        self.sendNotification(
-                            title: "Low Usage Limit (<10%) ⚡️",
-                            body: "Change to \(bestLabel) so that you'll be able to continue vibing.",
-                            action: "switch",
-                            targetEmail: best.email
-                        )
-                        lastSuggestedEmail = best.email
-                    }
+        if let active = new.first(where: { $0.isActive }), shouldRecommendSwitch(from: active) {
+            if !isLiveRefresh {
+                refreshAccounts(forceAPI: true)
+                return
+            }
+            if shouldAutoSwitch(from: active),
+               let target = automaticSwitchTarget(excluding: active.email) {
+                let best = target.account
+                let activeLowest = active.lowestRemainingPercent ?? 0
+                let bestLowest = best.lowestRemainingPercent ?? 0
+                let bestLabel = displayLabel(for: best)
+                persistHandoffState(reason: "low usage", previousEmail: active.email, targetEmail: best.email, active: active, recommended: best, accounts: new)
+                let key = "\(active.email)->\(best.email)|\(activeLowest)"
+                if lastAutoSwitchKey != key && !isSwitching {
+                    lastAutoSwitchKey = key
+                    let detail = target.waitsForReset
+                        ? "No account is at/above \(autoSwitchTargetFloorPercent)%. Switching to \(bestLabel), the non-API account whose depleted limit resets next."
+                        : "\(displayLabel(for: active)) is below \(autoSwitchThresholdPercent)% on one limit. Switching to \(bestLabel) (\(bestLowest)% lowest cap)."
+                    self.sendNotification(
+                        title: "Auto-switching account ⚡️",
+                        body: detail
+                    )
+                    self.switchTo(selector: best.selector, handoffReason: "automatic account switch", runContinuation: true)
                 }
+            } else if let best = bestRecommendation(excluding: active.email),
+                      lastSuggestedEmail != best.email {
+                let bestLabel = displayLabel(for: best)
+                self.sendNotification(
+                    title: "Low Usage Limit (≤\(recommendationThresholdPercent)%) ⚡️",
+                    body: "Switch to \(bestLabel): 5-hour \(remainingPercentText(fromRemaining: best.fiveHourRemainingPercent)), weekly \(remainingPercentText(fromRemaining: best.weeklyRemainingPercent)).",
+                    action: "switch",
+                    targetEmail: best.email
+                )
+                lastSuggestedEmail = best.email
+                lastAutoSwitchKey = nil
+            } else {
+                lastSuggestedEmail = nil
+                lastAutoSwitchKey = nil
             }
         } else {
             lastSuggestedEmail = nil
+            lastAutoSwitchKey = nil
         }
     }
 
@@ -1665,5 +2726,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
 let app = NSApplication.shared
 let delegate = AppDelegate()
+if CommandLine.arguments.contains("--test-account-policy") {
+    let result = delegate.runAccountPolicyTests()
+    print(result.output)
+    exit(result.status)
+}
+if CommandLine.arguments.contains("--test-current-account-handoff") {
+    let result = delegate.runCurrentAccountHandoffTest()
+    print(result.output)
+    exit(result.status)
+}
+if CommandLine.arguments.contains("--diagnose-auth-state") {
+    let result = delegate.runAuthStateDiagnostics()
+    print(result.output)
+    exit(result.status)
+}
 app.delegate = delegate
 app.run()

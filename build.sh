@@ -11,6 +11,20 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 BIN_PATH="$MACOS_DIR/CodexAccountSwitcher"
 MODULE_CACHE_DIR="$BUILD_DIR/ModuleCache"
 
+cleanup_codex_code_sign_clones() {
+  local temp_parent="${TMPDIR:-/tmp}"
+  temp_parent="$(cd "$temp_parent/.." 2>/dev/null && pwd -P || true)"
+  local clone_dir="$temp_parent/X/com.openai.codex.code_sign_clone"
+  case "$clone_dir" in
+    /private/var/folders/*/X/com.openai.codex.code_sign_clone|/var/folders/*/X/com.openai.codex.code_sign_clone)
+      rm -rf "$clone_dir"
+      ;;
+  esac
+}
+
+cleanup_codex_code_sign_clones
+trap cleanup_codex_code_sign_clones EXIT
+
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$MODULE_CACHE_DIR"
 
@@ -55,5 +69,27 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+SIGNING_IDENTITY="${CODE_SIGN_IDENTITY:-}"
+if [[ -z "$SIGNING_IDENTITY" ]]; then
+  SIGNING_IDENTITY="$(
+    security find-identity -p codesigning -v 2>/dev/null \
+      | sed -n 's/^[[:space:]]*[0-9][0-9]*) [A-F0-9]* "\(Apple Development:[^"]*\)".*/\1/p' \
+      | head -n 1
+  )"
+fi
+
+if [[ -n "$SIGNING_IDENTITY" ]]; then
+  codesign --remove-signature "$BIN_PATH" 2>/dev/null || true
+  codesign --force --sign "$SIGNING_IDENTITY" \
+    --identifier "local.codex-account-switcher.menu-bar" \
+    --requirements '=designated => identifier "local.codex-account-switcher.menu-bar" and anchor apple generic and certificate leaf[subject.CN] = "Apple Development: flashxjapan@gmail.com (R38YYZHMHK)" and certificate 1[field.1.2.840.113635.100.6.2.1] exists' \
+    "$APP_DIR"
+else
+  codesign --remove-signature "$BIN_PATH" 2>/dev/null || true
+  codesign --force --sign - \
+    --identifier "local.codex-account-switcher.menu-bar" \
+    "$APP_DIR"
+fi
 
 echo "$APP_DIR"
